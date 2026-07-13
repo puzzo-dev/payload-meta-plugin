@@ -1,7 +1,7 @@
 'use client'
 
 import React from 'react'
-import { FieldLabel, SelectInput } from '@payloadcms/ui'
+import { Button, FieldLabel, SelectInput } from '@payloadcms/ui'
 
 export const fieldWrapperStyle: React.CSSProperties = {
     marginBottom: '1.5rem',
@@ -53,7 +53,7 @@ export interface SelectOption {
 }
 
 interface FieldWrapperProps {
-    path?: string
+    path: string
     label?: string
     description?: string
     children: React.ReactNode
@@ -84,15 +84,9 @@ export const SuccessState: React.FC<{ message: string }> = ({ message }) => (
 )
 
 export const ConnectButton: React.FC<{ onClick: () => void; disabled?: boolean; children: React.ReactNode }> = ({ onClick, disabled, children }) => (
-    <button
-        type="button"
-        onClick={onClick}
-        disabled={disabled}
-        className="btn btn--style-primary"
-        style={{ cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.6 : 1 }}
-    >
+    <Button type="button" buttonStyle="primary" size="medium" disabled={disabled} onClick={onClick}>
         {children}
-    </button>
+    </Button>
 )
 
 interface StyledSelectProps {
@@ -120,6 +114,52 @@ export const StyledSelect: React.FC<StyledSelectProps> = ({
         }}
         options={[{ label: `— ${placeholder} —`, value: '' }, ...options]}
     />
+)
+
+export interface MetaAppInfo {
+    configured: boolean
+    maskedAppId: string | null
+    loading: boolean
+}
+
+/** Fetches whether the platform-level Meta App (META_APP_ID/META_APP_SECRET) is configured — shared by MetaConnectPanel and ThreadsConnectPanel, both of which gate their Connect button on it. */
+export function useMetaAppInfo(): MetaAppInfo {
+    const [state, setState] = React.useState<MetaAppInfo>({ configured: false, maskedAppId: null, loading: true })
+
+    React.useEffect(() => {
+        fetch('/api/meta-oauth/app-info')
+            .then((res) => res.json())
+            .then((data) => setState({ configured: Boolean(data.configured), maskedAppId: data.maskedAppId ?? null, loading: false }))
+            .catch(() => setState({ configured: false, maskedAppId: null, loading: false }))
+    }, [])
+
+    return state
+}
+
+/** Read-only readout of the shared platform Meta App — populated automatically, never a field the site owner fills in. */
+export const MetaAppInfoBadge: React.FC<{ appInfo: MetaAppInfo }> = ({ appInfo }) => {
+    if (appInfo.loading) return null
+    if (!appInfo.configured) {
+        return <ErrorState message="Meta App not configured on this deployment — an admin needs to set META_APP_ID and META_APP_SECRET." />
+    }
+    return (
+        <div style={{ ...messageBoxStyle('info'), display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Platform Meta App</span>
+            <code>{appInfo.maskedAppId}</code>
+        </div>
+    )
+}
+
+/** Label/value readout for connected-account details (Business Manager ID, Page, IG handle, etc.) — structured, not a run-on sentence. */
+export const DetailList: React.FC<{ items: Array<{ label: string; value: React.ReactNode }> }> = ({ items }) => (
+    <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: '1rem', rowGap: '0.375rem', fontSize: '0.875rem', margin: '0.5rem 0 0.75rem' }}>
+        {items.map((item) => (
+            <React.Fragment key={item.label}>
+                <span style={{ color: 'var(--theme-elevation-500, #6b7280)' }}>{item.label}</span>
+                <span>{item.value}</span>
+            </React.Fragment>
+        ))}
+    </div>
 )
 
 /** Reads and clears a query param left by an OAuth redirect callback, without a full reload. */

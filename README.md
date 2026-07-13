@@ -6,18 +6,20 @@ Modeled on the official "Meta for WooCommerce"/"Facebook for WordPress" plugins,
 
 It provides:
 
-- **Meta Connection Configuration** per site (multi-tenant) with encrypted credentials.
+- **Meta Connection Configuration** per site (multi-tenant) with encrypted credentials — same architecture as [`payload-erpnext-plugin`](../payload-erpnext-plugin).
 - **"Connect to Meta Business" OAuth flow** — the same connector UX as the official Meta for WordPress plugin: authorize once, pick a Facebook Page you manage, its linked Instagram Business account is auto-detected, then select an existing Pixel or create a new one. **Manual credential entry stays fully available side by side** — OAuth is a convenience, not a requirement.
 - **Threads connect flow** — separate from the Facebook/Instagram connector (Threads is its own API/host, see [Connecting Facebook, Instagram, and Threads](#connecting-facebook-instagram-and-threads)), also with manual token entry as a fallback.
 - **Server-Side Conversions API** — a `sendConversionEvent()` helper and a `meta-conversion-event` action registered into the CMS workflow engine, so any Workflow can fire a "Trigger Meta Conversion Event" step (order created → `Purchase`, contact form submitted → `Lead`, etc.).
 - **Commerce Catalog Feed** — `GET /api/meta-catalog/feed?site=<slug>`, a CSV feed generated from whichever collection a site's config designates, for Facebook/Instagram Shop.
-- **Connection Health Check** — verifies the stored access token against the Graph API and records connection status.
+- **Connection Health Check** — verifies the stored access token against the Graph API and records connection status, same UX as `ErpnextConfig`'s auto-fetch.
 
 > [!NOTE]
-> This plugin does **not** ship its own WhatsApp webhook receiver or outbound sender. If your host CMS already has generic inbound-webhook infrastructure and/or a WhatsApp Cloud API sender, point `meta-config`'s WhatsApp fields at those instead of duplicating them here. See [Why Not Rebuild WhatsApp?](#why-not-rebuild-whatsapp) below.
+> This plugin does **not** duplicate WhatsApp webhook receiving or outbound sending — the host CMS already has a generic `webhooks` collection (`payload-cms/src/collections/Webhooks.ts`) + `webhookReceiver.ts` for inbound, and `lib/whatsapp.ts`'s `sendWhatsApp()` (Meta Cloud API provider) for outbound. See [Why Not Rebuild WhatsApp?](#why-not-rebuild-whatsapp) below.
 
 > [!WARNING]
-> The OAuth endpoints (`metaOAuth.ts`, `threadsOAuth.ts`) are implemented strictly against Meta's and Threads' **documented** API contracts (OAuth dialog, token exchange, `/me/accounts`, `owned_pixels`, `adspixels`, Threads' separate `graph.threads.net` host). They have **not** been exercised against a real Meta App or Threads App — that requires a live App ID/Secret and a browser to complete the OAuth consent screen, neither of which exist in the environment this plugin was built in. **Do a manual test connect before relying on this in production**, and check Meta's current Graph API version (`GRAPH_API_VERSION` in `utils/metaGraphClient.ts`, currently `v21.0`) if any call returns a deprecation error — Meta bumps this periodically.
+> **Held out of production** (`payload-cms/src/payload.config.ts` only registers `metaPlugin()` when `NODE_ENV !== 'production'`) until the Meta App clears App Review and switches to Live mode. In Development mode, Meta only allows OAuth for users added as Testers/Admins/Developers on the App itself — real customers can't connect regardless of what's deployed, so there's no benefit to shipping it early, and doing so would surface a Connect button that fails for anyone not on that list. Fully active in dev for continued testing against the real App (App ID/Secret + use cases already configured, see below). Once App Review completes, remove the `NODE_ENV` condition around `metaPlugin(...)` in `payload.config.ts` to go live.
+>
+> Check Meta's current Graph API version (`GRAPH_API_VERSION` in `utils/metaGraphClient.ts`, currently `v21.0`) if any call returns a deprecation error — Meta bumps this periodically.
 
 ---
 
@@ -57,7 +59,7 @@ npm install payload-meta-plugin
 pnpm add payload-meta-plugin
 ```
 
-> If you're developing this plugin inside a monorepo alongside its host CMS, it's tempting to reference it as a `workspace:*`/`file:` link instead of a published version. Be aware that CI/CD pipelines with an isolated build context (e.g. a Docker build that only copies the host app's own directory) commonly can't resolve a workspace link to a sibling package — switch to a real published npm version before it needs to build in a pipeline like that.
+> Inside this monorepo it's referenced as `workspace:*` — that works fine in CI/production as long as the build pipeline has an explicit build step for it before anything that imports it gets typechecked (its `dist/` is gitignored, not committed). Forgetting that step is a real failure mode: it happened once (Jenkinsfile only built `payload-erpnext-plugin`, not this package, causing a "Cannot find module" typecheck failure), fixed by adding the matching `pnpm build`/`tsc --noEmit` steps for this package alongside the erpnext plugin's in the Jenkinsfile's Validate stage.
 
 ---
 
@@ -80,25 +82,36 @@ export default buildConfig({
 })
 ```
 
-### 2. Set the encryption key
+### 2. Set the encryption key and the platform Meta App
 
 ```bash
 # .env
 META_ENCRYPTION_KEY=$(openssl rand -hex 32)
+META_APP_ID=your-meta-app-id
+META_APP_SECRET=your-meta-app-secret
 ```
 
-Without this, credentials are stored in plain text (allowed in development; the plugin **fails fast at startup in production** unless you explicitly set `ALLOW_PLAINTEXT_META_CREDS=true`, which you should not do).
+Without `META_ENCRYPTION_KEY`, credentials are stored in plain text (allowed in development; the plugin **fails fast at startup in production** unless you explicitly set `ALLOW_PLAINTEXT_META_CREDS=true`, which you should not do).
+
+`META_APP_ID`/`META_APP_SECRET` are the **one Meta App for the whole deployment** — same pattern as Buffer/Hootsuite/Zapier: every tenant site connects through this single App, they never create their own. There's no API to create a Meta App programmatically (unlike, say, ERPNext's OAuth Client doctype), so this is a one-time manual step:
+
+1. Create an App at [developers.facebook.com](https://developers.facebook.com), add the **Facebook Login for Business** product (and **Threads API** if you'll connect Threads).
+2. Add `{PAYLOAD_PUBLIC_SERVER_URL}/api/meta-oauth/callback` and `{PAYLOAD_PUBLIC_SERVER_URL}/api/threads-oauth/callback` as **Valid OAuth Redirect URIs**.
+3. Switch the App to **Live** mode and request **Advanced Access** (via App Review) for whichever scopes you need — `pages_show_list`, `pages_read_engagement`, `instagram_basic`, `business_management`, `ads_management`, etc. In Development mode, OAuth only works for users added as Testers/Admins/Developers on the App itself — real tenant site owners won't be able to connect until this is done. Meta may also require **Business Verification** for the ads/marketing-adjacent scopes.
+4. Set `META_APP_ID`/`META_APP_SECRET` from that App's Settings → Basic page and restart.
+
+Site owners never see or enter these — the admin UI shows only a masked, read-only App ID (`GET /api/meta-oauth/app-info`) so they can confirm a platform App is configured before clicking Connect.
 
 ### 3. Create a `Meta Config` in the Payload Admin
 
 Go to **Integrations → Meta Config**:
 
 - Select the site/tenant.
-- **🔑 Connection tab**: either paste a long-lived Access Token manually, **or** enter a Meta App ID/Secret and click **Connect to Meta Business** — see [Connecting Facebook, Instagram, and Threads](#connecting-facebook-instagram-and-threads) for the full walkthrough. Either way, save — the plugin verifies the token against the Graph API a couple of seconds later and updates **Connection Status**.
+- **🔑 Connection tab**: either paste a long-lived Access Token manually, **or** click **Connect to Meta Business** and log in — see [Connecting Facebook, Instagram, and Threads](#connecting-facebook-instagram-and-threads) for the full walkthrough. Either way, save — the plugin verifies the token against the Graph API a couple of seconds later and updates **Connection Status**.
 - Enable and configure only the channel tabs this site needs:
   - **📊 Pixel & Conversions API** — Pixel ID (paste one, or use **Select / Create Pixel**).
-  - **🛍️ Commerce Catalog** — Catalog ID, the Payload collection slug to feed (e.g. `products`), and an item URL template.
-  - **💬 WhatsApp Business** — phone number ID + Business Account ID (wire these into your own WhatsApp Cloud API sender, or your host CMS's if it has one — see [Why Not Rebuild WhatsApp?](#why-not-rebuild-whatsapp)).
+  - **🛍️ Commerce Catalog** — Catalog ID, the Payload collection slug to feed (e.g. `catalogue-items`), and an item URL template.
+  - **💬 WhatsApp Business** — phone number ID + Business Account ID (outbound sending is already live via the host CMS's notification system once these are set — see [Why Not Rebuild WhatsApp?](#why-not-rebuild-whatsapp)).
   - **🧵 Threads** — click **Connect Threads** (its own, separate OAuth flow).
 - Mark **Active** and save.
 
@@ -108,7 +121,8 @@ Go to **Automation → Workflows**:
 
 - Create or edit a workflow (e.g. triggered on order creation).
 - In **Steps**, add a **Trigger Meta Conversion Event** block.
-- Pick the event name (`Purchase`, `Lead`, `AddToCart`, etc.) and map `value`/`currency`/`content_name` using `{{var}}` references into the workflow context — using `{{var}}` references into the workflow context.
+- Pick the event name (`Purchase`, `Lead`, `AddToCart`, etc.) and map `value`/`currency`/`content_name`/`email`/`phone` using `{{var}}` references into the workflow context — same templating syntax as the ERPNext plugin's `trigger_erp` step. `email`/`phone` are optional but recommended: they're SHA-256 hashed before ever leaving the server and significantly improve Meta's event match quality.
+- Trigger collection is just as generic as any other Workflow — e.g. watch `form-submissions` (`collection_change` / `afterCreate`) to fire `Lead` on every contact-form or job-application submission, no plugin-specific wiring required.
 
 ---
 
@@ -118,23 +132,22 @@ Two ways to connect, fully interchangeable — pick whichever suits a given site
 
 ### Option A — Manual
 
-Paste a long-lived Page or System User access token directly into `accessToken` on the **🔑 Connection** tab. This is the only option if you don't want to register a Meta App, or would rather not walk through an OAuth consent screen for a given site. Fully supported indefinitely — not a legacy fallback.
+Paste a long-lived Page or System User access token directly into `accessToken` on the **🔑 Connection** tab. Useful if a site owner already has a token from elsewhere, or wants to skip the OAuth consent screen. Fully supported indefinitely — not a legacy fallback.
 
 ### Option B — Connect to Meta Business (OAuth)
 
-Requires a **Meta App** (developers.facebook.com) with the **Facebook Login for Business** product added, plus **Business Manager** access to the Page(s)/Pixel(s)/WhatsApp number(s) you want to connect.
+Uses the one platform-level Meta App set up via `META_APP_ID`/`META_APP_SECRET` (see [Set the encryption key and the platform Meta App](#2-set-the-encryption-key-and-the-platform-meta-app) — that's a one-time deployment setup step, not something each site does). Once that's configured:
 
-1. In your Meta App's settings, add `{PAYLOAD_PUBLIC_SERVER_URL}/api/meta-oauth/callback` as a **Valid OAuth Redirect URI**.
-2. On the `meta-config` document, enter that App's **App ID** and **App Secret** on the 🔑 Connection tab, then save.
-3. Click **Connect to Meta Business** — you'll be redirected to Meta's OAuth consent screen requesting `business_management`, `pages_show_list`, `pages_read_engagement`, `pages_manage_metadata`, `instagram_basic`, `ads_management`, `catalog_management`, and `whatsapp_business_management` (trim the scope list in `metaOAuth.ts` if your App's review doesn't cover all of them — Meta simply omits ungranted permissions from the resulting token rather than failing the whole flow).
-4. After consenting, you land back on the `meta-config` edit page. Click **Load My Pages**, pick the Facebook Page this site should use, then **Use This Page** — the linked Instagram Business account (if any) is detected automatically and shown alongside it.
-5. On the **📊 Pixel & Conversions API** tab, enter a **Business Manager ID** (found in Meta Business Settings) on the Connection tab first, then use **Load Existing Pixels** to pick one, or **Create New Pixel** to make a fresh one scoped to that Business Manager.
+1. On the `meta-config` document's 🔑 Connection tab, the panel shows a masked, read-only **Platform Meta App** ID confirming it's configured.
+2. Click **Connect to Meta Business** — you'll be redirected to Meta's OAuth consent screen requesting `business_management`, `pages_show_list`, `pages_read_engagement`, `pages_manage_metadata`, `instagram_basic`, `ads_management`, `catalog_management`, and `whatsapp_business_management` (trim the scope list in `metaOAuth.ts` if your App's review doesn't cover all of them — Meta simply omits ungranted permissions from the resulting token rather than failing the whole flow).
+3. After consenting, you land back on the `meta-config` edit page. Click **Load My Pages**, pick the Facebook Page this site should use, then **Use This Page** — the linked Instagram Business account (if any) is detected automatically. The panel then shows a summary of what's connected: Business Manager ID, Facebook Page (name + ID), and Instagram handle.
+4. On the **📊 Pixel & Conversions API** tab, enter a **Business Manager ID** (found in Meta Business Settings) on the Connection tab first, then use **Load Existing Pixels** to pick one, or **Create New Pixel** to make a fresh one scoped to that Business Manager.
 
 ### Connecting Threads
 
-Threads is a **separate product/API** from Facebook and Instagram — its own OAuth host (`threads.net`, not `facebook.com`), its own token host (`graph.threads.net`, not `graph.facebook.com`), and its own token/profile shape — even though it's added as a product on the *same* Meta App and reuses that App's ID/Secret.
+Threads is a **separate product/API** from Facebook and Instagram — its own OAuth host (`threads.net`, not `facebook.com`), its own token host (`graph.threads.net`, not `graph.facebook.com`), and its own token/profile shape — even though it's added as a product on the *same* Meta App and reuses the same platform-level `META_APP_ID`/`META_APP_SECRET`.
 
-1. Add the **Threads API** product to the same Meta App, and register `{PAYLOAD_PUBLIC_SERVER_URL}/api/threads-oauth/callback` as its redirect URI.
+1. Add the **Threads API** product to the same Meta App (see setup step above), and register `{PAYLOAD_PUBLIC_SERVER_URL}/api/threads-oauth/callback` as its redirect URI.
 2. On the **🧵 Threads** tab, click **Connect Threads** — separate consent screen (`threads_basic`, `threads_content_publish`), separate callback, separate stored token (`threadsAccessToken`). Connecting Threads does not affect or require the Facebook/Instagram connection above, or vice versa.
 
 ### CSRF Protection Without a Session Store
@@ -154,6 +167,7 @@ export interface MetaPluginOptions {
 
 | Variable | Required | Description |
 |---|---|---|
+| `META_APP_ID` / `META_APP_SECRET` | For OAuth Connect | The one Meta App for the whole deployment (developers.facebook.com) — every tenant site's Connect button uses this. Not required if every site only ever uses manual Access Token entry. Never entered by a site owner; see [Set the encryption key and the platform Meta App](#2-set-the-encryption-key-and-the-platform-meta-app). |
 | `META_ENCRYPTION_KEY` | Production: yes | 32-byte hex key (`openssl rand -hex 32`) for AES-256-GCM credential encryption. Separate from `payload-erpnext-plugin`'s `ERPNEXT_ENCRYPTION_KEY` — rotating one doesn't affect the other. |
 | `ALLOW_PLAINTEXT_META_CREDS` | No | Set to `true` to explicitly allow plain-text credential storage in production. Do not set this unless you understand the risk (a DB dump/backup leaks every tenant's Meta access token). |
 | `PAYLOAD_PUBLIC_SERVER_URL` | For Catalog feed + OAuth | Used to build absolute image URLs in the Commerce Catalog feed, and the OAuth callback redirect URIs (`/api/meta-oauth/callback`, `/api/threads-oauth/callback`). Already set for the host CMS's other public-facing needs. |
@@ -163,17 +177,17 @@ export interface MetaPluginOptions {
 
 ## The `meta-config` Collection
 
-One document per site. Every credential field is directly editable (manual entry) — the Connect buttons are a convenience layer on top, not a replacement:
+One document per site. `appId`/`appSecret` are **not** fields here — they're the one platform-level Meta App (`META_APP_ID`/`META_APP_SECRET`), never per-site. Every other credential field is directly editable (manual entry) — the Connect buttons are a convenience layer on top, not a replacement:
 
 | Tab | Fields | Notes |
 |---|---|---|
-| 🔑 Connection | `appId`, `appSecret` (encrypted), `accessToken` (encrypted, required), `businessManagerId`, `connectionStatus` (read-only), `authMethod` (read-only, informational), **Connect to Meta Business** button, `facebookPageId`/`facebookPageName`/`instagramBusinessAccountId`/`instagramUsername` (read-only, set by Connect), `oauthUserAccessToken` (hidden, encrypted, internal) | `connectionStatus` updates ~2 seconds after save via a background Graph API `/me` check. See [Connecting Facebook, Instagram, and Threads](#connecting-facebook-instagram-and-threads). |
+| 🔑 Connection | `accessToken` (encrypted, required), `businessManagerId`, `connectionStatus` (read-only), `authMethod` (read-only, informational), masked **Platform Meta App** readout, **Connect to Meta Business** button, `facebookPageId`/`facebookPageName`/`instagramBusinessAccountId`/`instagramUsername` (read-only, set by Connect, shown as a connected-account summary), `oauthUserAccessToken` (hidden, encrypted, internal) | `connectionStatus` updates ~2 seconds after save via a background Graph API `/me` check. See [Connecting Facebook, Instagram, and Threads](#connecting-facebook-instagram-and-threads). |
 | 📊 Pixel & Conversions API | `pixelEnabled`, `pixelId`, **Select / Create Pixel** button | Enables `sendConversionEvent()` / the `meta-conversion-event` workflow action for this site. |
 | 🛍️ Commerce Catalog | `catalogEnabled`, `catalogId`, `catalogSourceCollection`, `catalogItemUrlTemplate` | Enables `GET /api/meta-catalog/feed?site=<slug>`. |
 | 💬 WhatsApp Business | `whatsappEnabled`, `whatsappPhoneNumberId`, `whatsappBusinessAccountId` | Populates the host CMS's existing `lib/whatsapp.ts` `metaCloud` provider — no plugin code needed for outbound sending. |
 | 🧵 Threads | `threadsEnabled`, **Connect Threads** button, `threadsUserId`/`threadsUsername` (read-only, set by Connect), `threadsAccessToken` (hidden, encrypted) | Independent OAuth flow — see [Connecting Facebook, Instagram, and Threads](#connecting-facebook-instagram-and-threads). |
 
-Credentials (`appSecret`, `accessToken`, `oauthUserAccessToken`, `threadsAccessToken`) are AES-256-GCM encrypted at rest and masked in the admin UI (`••••1234`) for any authenticated non-internal request — the same pattern many Payload plugins use for sensitive credential fields.
+Credentials (`accessToken`, `oauthUserAccessToken`, `threadsAccessToken`) are AES-256-GCM encrypted at rest and masked in the admin UI (`••••1234`) for any authenticated non-internal request — the same pattern `ErpnextConfig` uses for `apiKey`/`apiSecret`. `META_APP_SECRET` never touches the database at all — it's read from the environment on each OAuth request.
 
 ---
 
@@ -184,18 +198,26 @@ Credentials (`appSecret`, `accessToken`, `oauthUserAccessToken`, `threadsAccessT
 ```typescript
 import { getMetaCredentials, sendConversionEvent } from 'payload-meta-plugin'
 
-const creds = await getMetaCredentials(payload, 'my-site-slug')
+const creds = await getMetaCredentials(payload, 'thatofadagirl')
 if (creds?.pixelId) {
   await sendConversionEvent(creds, {
     eventName: 'Purchase',
-    customData: { value: 12500, currency: 'USD' },
+    customData: { value: 12500, currency: 'NGN' },
   })
 }
 ```
 
 There is deliberately **no client-side event to deduplicate against** — this plugin doesn't fire `fbq()` calls, so the `eventId`/dedup dance Meta's docs describe for hybrid Pixel+CAPI setups doesn't apply here. If a site later adds its own client Pixel events independently, `eventId` is available on `ConversionEventInput` to dedupe against those.
 
-The **Trigger Meta Conversion Event** workflow step (`trigger_meta_conversion` block) is the no-code path — see [Quick Start](#quick-start) step 4.
+`ConversionEventInput.userData` accepts pre-hashed `emailHash`/`phoneHash` (SHA-256, caller hashes before calling — never pass raw PII here) for better event match quality. The workflow step below does this hashing for you from plain `email`/`phone` step fields.
+
+The **Trigger Meta Conversion Event** workflow step (`trigger_meta_conversion` block) is the no-code path — see [Quick Start](#quick-start) step 4. It reads `event_name`/`value`/`currency`/`content_name`/`event_source_url`/`email`/`phone` off the step, resolves `{{var}}` templates against the workflow context, hashes `email`/`phone` (SHA-256, trimmed + lowercased; phone digits-only) before they ever reach Meta, and calls `sendConversionEvent()` under the hood (`metaConversionEventHandler` in `actions/metaActions.ts`).
+
+**Any collection can trigger it** — the Workflow engine's trigger isn't Meta-specific. Watching `form-submissions` on `afterCreate` is the common case: a contact form or job application becomes a `Lead` event with zero extra plugin code, using the site's connected Pixel from the Connect flow above.
+
+### Migrating from the old `analytics-integrations`/`meta-capi` path
+
+Earlier, Meta Conversions API had a second, unrelated implementation: the host CMS's generic `send_analytics_event` workflow block (`analytics_provider: 'meta'`) reading credentials from an `analytics-integrations` collection row (`provider: 'meta-capi'`). That path is retired — `send_analytics_event` is GA4-only now. If you were using it, recreate the same event as a **Trigger Meta Conversion Event** step instead; the site's Pixel/token now come from `meta-config` (via Connect or manual entry above), not a second credential entry.
 
 ---
 
@@ -237,18 +259,19 @@ All `/meta-oauth/*` and `/threads-oauth/start` endpoints require an authenticate
 
 ## Why Not Rebuild WhatsApp?
 
-WhatsApp Business Cloud API needs two things: an outbound message sender, and an inbound webhook receiver (with Meta's `GET` `hub.challenge`/`hub.verify_token` handshake before Meta will start sending `POST`s). This plugin ships neither, on purpose.
+The host CMS already has real, generic, multi-tenant WhatsApp infrastructure:
 
-Most Payload CMS installations of any real size already have — or will eventually build — a generic notification/messaging layer (an outbound sender abstraction over email/SMS/WhatsApp/etc.) and a generic inbound-webhook receiver (a `webhooks`-style collection with per-integration HMAC secrets, used for more than just Meta). If yours does, wire `meta-config`'s `whatsappPhoneNumberId`/`whatsappBusinessAccountId`/`whatsappAccessToken`-equivalent fields into that existing infrastructure, and add the `GET` verify-token handshake as a small, targeted extension to your existing webhook receiver — rather than having this plugin duplicate a second, parallel messaging/webhook system that only WhatsApp uses.
+- **Outbound**: `payload-cms/src/lib/whatsapp.ts`'s `sendWhatsApp()` supports the official Meta Cloud API provider (`metaCloud: { phoneNumberId, accessToken }`) alongside OpenWA, resolved per-site via `notificationService.ts`. Filling in `whatsappPhoneNumberId`/`whatsappBusinessAccountId` on `meta-config` is enough — no plugin code needed.
+- **Inbound**: `payload-cms/src/collections/Webhooks.ts` + `webhookReceiver.ts` (`POST /api/webhooks/:id`) is a fully generic, per-site, HMAC-verified webhook receiver with replay protection and job-queue dispatch — its own admin description cites "WhatsApp Bot" as an example use case.
 
-If your host CMS has no such infrastructure yet and you want WhatsApp support specifically through this plugin, that's a reasonable thing to open an issue or PR for — it just isn't built as of this version.
+The one real gap: Meta's WhatsApp Cloud API webhook subscription requires a `GET` `hub.challenge`/`hub.verify_token` handshake before it will start sending `POST`s, and the generic receiver only handles `POST`+HMAC today. That's a small, targeted extension to the *host CMS's* existing `Webhooks` collection/`webhookReceiver.ts` — not something this plugin should duplicate with its own parallel WhatsApp-specific route. (An earlier, unrelated attempt at a WhatsApp webhook route lived directly in one frontend site, hardcoded and non-functional; it's been deleted.)
 
 ---
 
 ## Security
 
-- Credentials (`appSecret`, `accessToken`) are AES-256-GCM encrypted at rest (`META_ENCRYPTION_KEY`), masked in the admin UI, and only decrypted server-side when actually needed (e.g. `getMetaCredentials()`, the connection-health check).
-- `appSecret`/`accessToken` are only writable by `admin`/`super-admin` roles (`adminOrAboveField` field-level access) — editors can see the masked config but can't rotate credentials or repoint a connection.
+- Credentials (`accessToken`) are AES-256-GCM encrypted at rest (`META_ENCRYPTION_KEY`), masked in the admin UI, and only decrypted server-side when actually needed (e.g. `getMetaCredentials()`, the connection-health check). `META_APP_SECRET` is never stored in the database at all — it's read from the environment only, on each OAuth request.
+- `accessToken` is only writable by `admin`/`super-admin` roles (`adminOrAboveField` field-level access) — editors can see the masked config but can't rotate credentials or repoint a connection.
 - `getMetaCredentials()` never falls back across sites — a lookup for one site's slug will never return another tenant's credentials, even on a partial/missing config.
 - The Commerce Catalog feed is intentionally public (Meta's crawler needs unauthenticated access) but strictly site-scoped — it can never return another site's data, and only returns docs that already belong to the requested site.
 - The OAuth `state` param is HMAC-signed with a 10-minute TTL and verified with a constant-time comparison (`signOAuthState`/`verifyOAuthState` in `utils/metaCrypto.ts`) — the callback endpoints reject a forged, tampered, or replayed-after-expiry state before doing anything else.
@@ -259,10 +282,10 @@ If your host CMS has no such infrastructure yet and you want WhatsApp support sp
 
 ## What's Not Built Yet
 
-- **WhatsApp outbound sending / inbound webhook receiving** — deliberately not duplicated here; see [Why Not Rebuild WhatsApp?](#why-not-rebuild-whatsapp).
-- **Live verification of the OAuth flow** — see the warning at the top of this README. Implemented per Meta's/Threads' documented contracts, not yet exercised against a real App.
+- **WhatsApp webhook verify-token handshake** — belongs on the host CMS's `Webhooks` collection/`webhookReceiver.ts`, not this plugin (see [Why Not Rebuild WhatsApp?](#why-not-rebuild-whatsapp)).
+- **Not live in production** — see the warning at the top of this README. A real Meta App exists and is being tested end-to-end in dev, but it's still in Development mode pending App Review/Live mode, so it's held out of production deploys until that clears (real customers can't complete OAuth against a Development-mode App regardless of what's deployed).
 
-Contributions welcome — open an issue or PR.
+See `payload-cms/docs/future-features.md` in the host monorepo for the full, up-to-date plan and status.
 
 ---
 

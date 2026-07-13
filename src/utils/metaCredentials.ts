@@ -4,10 +4,10 @@ import type { MetaCredentials } from '../types'
 
 /**
  * Resolve a site's active Meta credentials from the meta-config collection.
- * Per-site lookup only — never falls back to another site's config, which
- * would leak data across tenants. Decrypts the masking-safety-net way
- * (re-decrypt if an "enc:" prefix leaked through afterRead), and fails
- * closed on any inconsistency rather than guessing.
+ * Mirrors payload-erpnext-plugin's getCredentials() exactly: per-site lookup
+ * (never falls back to another site's config — that would leak data across
+ * tenants), decrypts the masking-safety-net way (re-decrypt if an "enc:"
+ * prefix leaked through afterRead), fails closed on any inconsistency.
  */
 export async function getMetaCredentials(
     payload: Parameters<Endpoint['handler']>[0]['payload'],
@@ -20,6 +20,27 @@ export async function getMetaCredentials(
         const rawToken = cfg.accessToken as string
         if (!rawToken) return null
 
+        // Meta's long-lived Page tokens have no refresh_token grant — past
+        // oauthExpiresAt (~60 days from Connect, tracked since this fix) the
+        // token is dead. Previously nothing ever checked this: API calls
+        // would just start failing with an upstream OAuthException while
+        // connectionStatus kept showing "Connected" indefinitely (the only
+        // other code that re-tests it, testMetaConnection, explicitly skips
+        // re-testing once already connected). Fail closed here and mark the
+        // config disconnected so the failure is visible in the admin UI.
+        const expiresAt = cfg.oauthExpiresAt as string | undefined
+        if (expiresAt && new Date(expiresAt).getTime() <= Date.now()) {
+            payload.logger.warn(`[MetaCredentials] accessToken expired for config ${cfg.id} — marking disconnected.`)
+            payload.update({
+                collection: 'meta-config' as unknown as CollectionSlug,
+                id: cfg.id as string | number,
+                data: { connectionStatus: 'disconnected' } as any,
+                overrideAccess: true,
+                context: { skipConnectionTest: true },
+            }).catch((err) => payload.logger.warn(`[MetaCredentials] Failed to mark config ${cfg.id} disconnected: ${err}`))
+            return null
+        }
+
         if (isMasked(rawToken)) {
             payload.logger.error(
                 `[MetaCredentials] Credential masking leaked through for config ${cfg.id}. ` +
@@ -31,14 +52,7 @@ export async function getMetaCredentials(
         const accessToken = rawToken.startsWith('enc:') ? decryptCredential(rawToken) : rawToken
         if (!accessToken || isMasked(accessToken)) return null
 
-        const rawAppSecret = cfg.appSecret as string | undefined
-        const appSecret = rawAppSecret
-            ? (rawAppSecret.startsWith('enc:') ? decryptCredential(rawAppSecret) : rawAppSecret)
-            : undefined
-
         return {
-            appId: (cfg.appId as string) || undefined,
-            appSecret,
             accessToken,
             businessManagerId: (cfg.businessManagerId as string) || undefined,
             pixelId: (cfg.pixelEnabled && cfg.pixelId) ? (cfg.pixelId as string) : undefined,

@@ -27,7 +27,7 @@ export const MetaPixelSelectField: React.FC = () => {
 
     if (!id) {
         return (
-            <FieldWrapper label="Select / Create Pixel">
+            <FieldWrapper path="metaPixelSelectPanel" label="Select / Create Pixel">
                 <EmptyState message="Save the document first, then this will be available." />
             </FieldWrapper>
         )
@@ -74,7 +74,7 @@ export const MetaPixelSelectField: React.FC = () => {
     }
 
     return (
-        <FieldWrapper label="Select / Create Pixel" description="Requires Business Manager ID and a completed Meta Business Login connection (Connection tab).">
+        <FieldWrapper path="metaPixelSelectPanel" label="Select / Create Pixel" description="Requires Business Manager ID and a completed Meta Business Login connection (Connection tab).">
             {error && <ErrorState message={error} />}
             {savedMessage && <EmptyState message={savedMessage} />}
 
@@ -111,7 +111,7 @@ export const MetaPixelSelectField: React.FC = () => {
                                 path="metaPixelSelectPanel_newPixelName"
                                 value={newPixelName}
                                 onChange={(e: { target: { value: string } }) => setNewPixelName(e.target.value)}
-                                placeholder="New Pixel name, e.g. &quot;Acme Storefront&quot;"
+                                placeholder="New Pixel name, e.g. &quot;That Ofada Girl&quot;"
                             />
                         </div>
                         <ConnectButton onClick={createPixel} disabled={!newPixelName.trim() || creating}>

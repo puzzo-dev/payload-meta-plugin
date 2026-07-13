@@ -3,7 +3,8 @@
  *
  * Provides AES-256-GCM encryption for Meta (App Secret, Access Token) credentials
  * stored in the database. Credentials are encrypted before save and decrypted
- * after read.
+ * after read. Same scheme as payload-erpnext-plugin/src/utils/erpnextCrypto.ts,
+ * with its own key so rotating one plugin's key doesn't affect the other.
  *
  * Requires META_ENCRYPTION_KEY env var (32-byte hex string).
  * If the key is not set, credentials are stored/read in plain text (backward compatible).
@@ -104,6 +105,30 @@ export function decryptCredential(stored: string): string {
         console.error('[meta-crypto] Failed to decrypt credential:', err)
         return stored // Return raw value on failure — don't break the system
     }
+}
+
+// ── Platform Meta App credentials ────────────────────────────────────
+//
+// One Meta App (created once, by hand, in developers.facebook.com — there is
+// no public Graph API to create an App programmatically, unlike ERPNext's
+// OAuth Client doctype) serves every tenant site, same pattern as Buffer/
+// Hootsuite/Zapier: the App ID/Secret identify the INTEGRATION, not any one
+// site's Facebook Page — each site still does its own OAuth consent to link
+// its own Page/IG/Pixel. Read directly from env (not per-site DB fields) so
+// no site owner ever needs to create a Meta App or handle a Secret.
+
+export function getMetaAppCredentials(): { appId: string; appSecret: string } | null {
+    const appId = process.env.META_APP_ID
+    const appSecret = process.env.META_APP_SECRET
+    if (!appId || !appSecret) return null
+    return { appId, appSecret }
+}
+
+/** App ID isn't actually secret (it's public in every OAuth URL), but masked for a consistent "populated, not fully shown" UI treatment. */
+export function getMaskedMetaAppId(): string | null {
+    const creds = getMetaAppCredentials()
+    if (!creds) return null
+    return creds.appId.length > 4 ? `••••${creds.appId.slice(-4)}` : '••••'
 }
 
 // ── OAuth state signing ──────────────────────────────────────────────

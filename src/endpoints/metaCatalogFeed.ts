@@ -130,7 +130,7 @@ export const metaCatalogFeedEndpoint: Endpoint = {
                 csvEscape(description),
                 csvEscape(available ? 'in stock' : 'out of stock'),
                 csvEscape('new'),
-                csvEscape(`${Number(price).toFixed(2)} USD`),
+                csvEscape(`${Number(price).toFixed(2)} NGN`),
                 csvEscape(link),
                 csvEscape(imageLink),
             ].join(','))

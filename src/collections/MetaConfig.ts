@@ -10,24 +10,30 @@ import type { UserWithRole } from '../types';
  * Field-level guard: only admins/super-admins (or trusted server calls using
  * overrideAccess) may set the Meta App Secret / Access Token. Editors can still
  * see the (masked) config, but must not be able to rotate credentials or exfiltrate
- * them by pointing the connection at something else.
+ * them by pointing the connection at something else — same reasoning as
+ * payload-erpnext-plugin's adminOrAboveField.
  */
 const adminOrAboveField: FieldAccess = ({ req }) =>
     ['super-admin', 'admin'].includes((req?.user as unknown as UserWithRole | undefined)?.role ?? '')
 
-// ── Credential encryption hooks (reused by appSecret, accessToken) ──
+// ── Credential encryption hooks (reused by accessToken, oauthUserAccessToken, threadsAccessToken) ──
 
-async function encryptBeforeChange({ value, previousDoc, field, req }: { value: unknown; previousDoc?: Record<string, unknown>; field: { name: string }, req: any }) {
+async function encryptBeforeChange({ value, originalDoc, field, req }: { value: unknown; originalDoc?: Record<string, unknown>; field: { name: string }, req: any }) {
     if (typeof value === 'string' && value && !value.startsWith('••••')) {
         return encryptCredential(value)
     }
     if (typeof value === 'string' && value.startsWith('••••')) {
-        if (!previousDoc?.id) {
+        // `previousDoc` is only ever populated in afterChange hooks — Payload's
+        // own beforeChange field-hook invocation never passes it, only
+        // `originalDoc`. Using previousDoc here meant this recovery path threw
+        // unconditionally on every resave of a document with an already-encrypted
+        // field the admin didn't touch.
+        if (!originalDoc?.id) {
             throw new Error(`Cannot save masked credential for ${field.name}. Please re-enter it.`)
         }
         const rawConfig = await req.payload.findByID({
             collection: 'meta-config' as unknown as CollectionSlug,
-            id: previousDoc.id,
+            id: originalDoc.id,
             depth: 0,
             overrideAccess: true,
             context: { preventMasking: true, skipConnectionTest: true },
@@ -52,11 +58,12 @@ function decryptAfterRead({ value, req, context }: { value: unknown; req: any; c
 
 // ── afterChange: test the connection when an access token is saved ──
 //
-// This hook does the minimum useful thing on every save: verifies the stored
-// access token is actually valid by calling Graph API's /me, and records
-// connectionStatus. Enumerating Pages/Pixels/WhatsApp numbers reachable by a
-// token is the "Connect to Meta Business" OAuth flow's job (components/), not
-// this hook's.
+// Meta doesn't have an ERPNext-style "list of companies" to fetch — the closest
+// equivalent (enumerating Pages/Pixels/WhatsApp numbers reachable by this token)
+// belongs to the OAuth "Connect to Meta Business" flow (see docs/future-features.md,
+// not yet built). For now this hook does the minimum useful thing: verifies the
+// stored access token is actually valid by calling Graph API's /me, and records
+// connectionStatus — same UX shape as ERPNextConfig's auto-fetch, smaller scope.
 const testMetaConnection: CollectionAfterChangeHook = async ({ doc, previousDoc, operation, req }) => {
     if (operation === 'update' && previousDoc) {
         const alreadyConnected = doc.connectionStatus === 'connected'
@@ -118,22 +125,27 @@ const testMetaConnection: CollectionAfterChangeHook = async ({ doc, previousDoc,
  * each tab — nothing here assumes every site wants Pixel + Catalog + WhatsApp.
  *
  * UX Flow — two ways to connect, both fully supported side by side:
- *   A. Manual: enter App ID/Secret (optional) + long-lived Access Token → Save.
- *      afterChange hook verifies the token against Graph API and sets connectionStatus.
+ *   A. Manual: paste a long-lived Access Token directly → Save. afterChange
+ *      hook verifies the token against Graph API and sets connectionStatus.
  *   B. OAuth ("Connect to Meta Business", like the official Meta for WordPress
- *      plugin): set App ID/Secret, click Connect, pick a Facebook Page you
- *      manage — its linked Instagram Business account is auto-detected — then
- *      select or create a Pixel. Connect Threads separately (its own OAuth
- *      flow — see collections/MetaConfig.ts Threads tab). OAuth just populates
- *      the same `accessToken`/`pixelId` fields manual entry uses, so nothing
+ *      plugin): click Connect, log in, pick a Facebook Page you manage — its
+ *      linked Instagram Business account is auto-detected — then select or
+ *      create a Pixel. Connect Threads separately (its own OAuth flow — see
+ *      the Threads tab). Both use the ONE platform-level Meta App configured
+ *      via META_APP_ID/META_APP_SECRET (see utils/metaCrypto.ts) — no site
+ *      owner ever creates a Meta App or handles an App Secret; that's a
+ *      one-time step done once for the whole deployment, same pattern as
+ *      Buffer/Hootsuite/Zapier. OAuth just populates the same
+ *      `accessToken`/`pixelId` fields manual entry uses, so nothing
  *      downstream (Conversions API, Catalog feed) needs to know which path
  *      populated them.
  *   Either way: enable whichever channel tabs this site needs (Pixel / Catalog
  *   / WhatsApp / Threads) — nothing here assumes a site wants all of them.
  *
  * Deliberately does NOT yet include: WhatsApp webhook verify-token handling
- * — if your host CMS already has a generic inbound-webhook system, extend
- * that rather than duplicating one here. See README.md for full status.
+ * (belongs on the host CMS's existing generic Webhooks collection, not
+ * duplicated here — see README.md). See payload-cms/docs/future-features.md
+ * for status.
  */
 export const MetaConfig: CollectionConfig = {
     slug: 'meta-config',
@@ -174,7 +186,7 @@ export const MetaConfig: CollectionConfig = {
             name: 'label',
             type: 'text',
             required: true,
-            admin: { description: 'Friendly name, e.g. "Acme Storefront — Meta"' },
+            admin: { description: 'Friendly name, e.g. "That Ofada Girl — Meta"' },
         },
         {
             type: 'row',
@@ -205,44 +217,29 @@ export const MetaConfig: CollectionConfig = {
                 // ── Tab 1: Connection ────────────────────────────────
                 {
                     label: '🔑 Connection',
-                    description: 'Create a Meta App and a long-lived System User or Page access token in Meta Business Manager, then enter them here.',
+                    description: 'This deployment connects to Meta through one shared Meta App (set once via META_APP_ID/META_APP_SECRET) — click Connect below and log in, no App ID/Secret to enter here.',
                     fields: [
-                        {
-                            type: 'row',
-                            fields: [
-                                {
-                                    name: 'appId',
-                                    type: 'text',
-                                    admin: { description: 'Meta App ID', width: '50%' },
-                                },
-                                {
-                                    name: 'appSecret',
-                                    type: 'text',
-                                    access: { create: adminOrAboveField, update: adminOrAboveField },
-                                    admin: { description: 'Meta App Secret', width: '50%' },
-                                    hooks: {
-                                        beforeChange: [
-                                            async ({ value, previousDoc, req }) =>
-                                                await encryptBeforeChange({ value, previousDoc, field: { name: 'appSecret' }, req }),
-                                        ],
-                                        afterRead: [
-                                            ({ value, req, context }) =>
-                                                decryptAfterRead({ value, req, context: context as Record<string, unknown> }),
-                                        ],
-                                    },
-                                },
-                            ],
-                        },
                         {
                             name: 'accessToken',
                             type: 'text',
-                            required: true,
+                            // Deliberately optional, not just conditionally required. authMethod
+                            // is read-only and only ever flips to 'oauth' *after* a successful
+                            // Connect to Meta Business flow — which itself requires this document
+                            // to already have an id (the Connect button only renders once saved).
+                            // Gating this field's requirement on authMethod === 'oauth' therefore
+                            // made the very first save of a brand-new OAuth-only config impossible:
+                            // authMethod could never be 'oauth' yet, so accessToken was always
+                            // required, so the document could never be saved, so Connect could
+                            // never appear. getMetaCredentials() (utils/metaCredentials.ts) already
+                            // fails closed with a clear error at USE time if neither a manual token
+                            // nor a completed OAuth connection exist, so nothing needs to be
+                            // enforced here at save time.
                             access: { create: adminOrAboveField, update: adminOrAboveField },
-                            admin: { description: 'Long-lived System User or Page access token' },
+                            admin: { description: 'Long-lived System User or Page access token — only needed for manual authentication, see Connect to Meta Business below.' },
                             hooks: {
                                 beforeChange: [
-                                    async ({ value, previousDoc, req }) =>
-                                        await encryptBeforeChange({ value, previousDoc, field: { name: 'accessToken' }, req }),
+                                    async ({ value, originalDoc, req }) =>
+                                        await encryptBeforeChange({ value, originalDoc, field: { name: 'accessToken' }, req }),
                                 ],
                                 afterRead: [
                                     ({ value, req, context }) =>
@@ -333,13 +330,21 @@ export const MetaConfig: CollectionConfig = {
                             },
                             hooks: {
                                 beforeChange: [
-                                    async ({ value, previousDoc, req }) =>
-                                        await encryptBeforeChange({ value, previousDoc, field: { name: 'oauthUserAccessToken' }, req }),
+                                    async ({ value, originalDoc, req }) =>
+                                        await encryptBeforeChange({ value, originalDoc, field: { name: 'oauthUserAccessToken' }, req }),
                                 ],
                                 afterRead: [
                                     ({ value, req, context }) =>
                                         decryptAfterRead({ value, req, context: context as Record<string, unknown> }),
                                 ],
+                            },
+                        },
+                        {
+                            name: 'oauthExpiresAt',
+                            type: 'date',
+                            admin: {
+                                hidden: true,
+                                description: 'Internal — when the long-lived Page access token (accessToken) expires (~60 days from Connect). getMetaCredentials() fails closed and marks the connection disconnected past this point; Meta has no refresh_token grant, so re-connecting is currently a manual action.',
                             },
                         },
                     ],
@@ -403,7 +408,7 @@ export const MetaConfig: CollectionConfig = {
                             name: 'catalogSourceCollection',
                             type: 'text',
                             admin: {
-                                description: 'Payload collection slug to feed into the catalog (e.g. "products", "menu-items") — not hardcoded to any one site\'s schema.',
+                                description: 'Payload collection slug to feed into the catalog (e.g. "catalogue-items", "products") — not hardcoded to any one site\'s schema.',
                                 condition: (_data, siblingData) => Boolean(siblingData?.catalogEnabled),
                             },
                         },
@@ -411,7 +416,7 @@ export const MetaConfig: CollectionConfig = {
                             name: 'catalogItemUrlTemplate',
                             type: 'text',
                             admin: {
-                                description: 'Item page URL template on the live site — "{slug}" is replaced per item, e.g. https://example.com/products/{slug}. Required for a valid feed (Meta rejects items without a working link).',
+                                description: 'Item page URL template on the live site — "{slug}" is replaced per item, e.g. https://thatofadagirl.com/menu/{slug}. Required for a valid feed (Meta rejects items without a working link).',
                                 condition: (_data, siblingData) => Boolean(siblingData?.catalogEnabled),
                             },
                         },
@@ -495,13 +500,21 @@ export const MetaConfig: CollectionConfig = {
                             },
                             hooks: {
                                 beforeChange: [
-                                    async ({ value, previousDoc, req }) =>
-                                        await encryptBeforeChange({ value, previousDoc, field: { name: 'threadsAccessToken' }, req }),
+                                    async ({ value, originalDoc, req }) =>
+                                        await encryptBeforeChange({ value, originalDoc, field: { name: 'threadsAccessToken' }, req }),
                                 ],
                                 afterRead: [
                                     ({ value, req, context }) =>
                                         decryptAfterRead({ value, req, context: context as Record<string, unknown> }),
                                 ],
+                            },
+                        },
+                        {
+                            name: 'threadsTokenExpiresAt',
+                            type: 'date',
+                            admin: {
+                                hidden: true,
+                                description: 'Internal — when threadsAccessToken expires (~60 days from Connect Threads).',
                             },
                         },
                     ],

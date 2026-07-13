@@ -1,7 +1,8 @@
 /**
  * Thin HTTP clients for Meta's Graph API and the separate Threads API.
- * Retries on transient (5xx/network) failures, fails fast on 4xx, and parses
- * Meta's error envelope for a useful message instead of a bare status code.
+ * Mirrors payload-erpnext-plugin's erpActions.ts erpCall() shape: retry on
+ * transient (5xx/network) failures, fail fast on 4xx, parse Meta's error
+ * envelope for a useful message instead of a bare status code.
  */
 
 const MAX_RETRIES = 2

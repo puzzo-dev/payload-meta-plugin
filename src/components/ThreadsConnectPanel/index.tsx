@@ -2,13 +2,15 @@
 
 import React, { useCallback, useEffect, useState } from 'react'
 import { useDocumentInfo } from '@payloadcms/ui'
-import { FieldWrapper, LoadingState, EmptyState, ErrorState, SuccessState, ConnectButton, useOAuthRedirectMessage } from '../shared'
+import {
+    FieldWrapper, LoadingState, ErrorState, SuccessState, ConnectButton, useOAuthRedirectMessage,
+    useMetaAppInfo, MetaAppInfoBadge, DetailList,
+} from '../shared'
 
 interface DocSnapshot {
     threadsEnabled?: boolean
     threadsUserId?: string
     threadsUsername?: string
-    appId?: string
 }
 
 /**
@@ -19,6 +21,7 @@ interface DocSnapshot {
 export const ThreadsConnectPanelField: React.FC = () => {
     const { id } = useDocumentInfo()
     const redirectMsg = useOAuthRedirectMessage('threads_oauth_success', 'threads_oauth_error')
+    const appInfo = useMetaAppInfo()
 
     const [doc, setDoc] = useState<DocSnapshot | null>(null)
     const [loadingDoc, setLoadingDoc] = useState(false)
@@ -42,8 +45,9 @@ export const ThreadsConnectPanelField: React.FC = () => {
 
     if (!id) {
         return (
-            <FieldWrapper label="Connect Threads">
-                <EmptyState message="Save the document first (with at least a Meta App ID), then Connect Threads will be available." />
+            <FieldWrapper path="threadsConnectPanel" label="Connect Threads">
+                <MetaAppInfoBadge appInfo={appInfo} />
+                <p>Save the document first, then Connect Threads will be available.</p>
             </FieldWrapper>
         )
     }
@@ -51,25 +55,22 @@ export const ThreadsConnectPanelField: React.FC = () => {
     const isConnected = Boolean(doc?.threadsUserId)
 
     return (
-        <FieldWrapper label="Connect Threads">
+        <FieldWrapper path="threadsConnectPanel" label="Connect Threads">
+            <MetaAppInfoBadge appInfo={appInfo} />
             {redirectMsg.error && <ErrorState message={redirectMsg.error} />}
 
             {loadingDoc ? (
                 <LoadingState message="Loading connection status…" />
             ) : isConnected ? (
                 <>
-                    <SuccessState message={`Connected — @${doc?.threadsUsername} (${doc?.threadsUserId})`} />
+                    <SuccessState message="Connected to Threads" />
+                    <DetailList items={[{ label: 'Threads Account', value: `@${doc?.threadsUsername} (${doc?.threadsUserId})` }]} />
                     <ConnectButton onClick={startConnect}>Reconnect / Switch Account</ConnectButton>
                 </>
             ) : (
-                <>
-                    {!doc?.appId && (
-                        <EmptyState message="Set a Meta App ID on the Connection tab first (Threads must be added as a product on that same Meta App)." />
-                    )}
-                    <ConnectButton onClick={startConnect} disabled={!doc?.appId}>
-                        Connect Threads
-                    </ConnectButton>
-                </>
+                <ConnectButton onClick={startConnect} disabled={!appInfo.configured}>
+                    Connect Threads
+                </ConnectButton>
             )}
         </FieldWrapper>
     )

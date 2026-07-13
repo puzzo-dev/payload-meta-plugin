@@ -1,7 +1,7 @@
 import type { Endpoint, CollectionSlug } from 'payload'
-import { encryptCredential, decryptCredential, signOAuthState, verifyOAuthState } from '../utils/metaCrypto'
+import { encryptCredential, signOAuthState, verifyOAuthState, getMetaAppCredentials } from '../utils/metaCrypto'
 import { threadsGet, threadsPost } from '../utils/metaGraphClient'
-import type { UserWithRole } from '../types'
+import { callerOwnsConfigSite, type UserWithRole } from '../types'
 
 /**
  * Threads connect flow. Threads API is a genuinely separate product from the
@@ -58,14 +58,18 @@ export const threadsOAuthStartEndpoint: Endpoint = {
             return Response.json({ error: 'Config not found' }, { status: 404 })
         }
 
-        const appId = config.appId as string | undefined
-        if (!appId) {
-            return Response.json({ error: 'Set a Meta App ID on the Connection tab before connecting Threads.' }, { status: 400 })
+        if (!callerOwnsConfigSite(req, config)) {
+            return Response.json({ error: 'Forbidden' }, { status: 403 })
+        }
+
+        const appCreds = getMetaAppCredentials()
+        if (!appCreds) {
+            return Response.json({ error: 'Meta App not configured on this deployment — set META_APP_ID and META_APP_SECRET.' }, { status: 400 })
         }
 
         const state = signOAuthState(configId)
         const params = new URLSearchParams({
-            client_id: appId,
+            client_id: appCreds.appId,
             redirect_uri: callbackRedirectUri(),
             state,
             scope: THREADS_SCOPES,
@@ -99,24 +103,21 @@ export const threadsOAuthCallbackEndpoint: Endpoint = {
             return Response.redirect(`${adminBase}?threads_oauth_error=${encodeURIComponent('Invalid or expired connect request — try again')}`, 302)
         }
 
-        let config: Record<string, unknown>
         try {
-            config = await loadConfig(req.payload, configId)
+            await loadConfig(req.payload, configId)
         } catch {
             return Response.redirect(`${adminBase}?threads_oauth_error=${encodeURIComponent('Config not found')}`, 302)
         }
 
-        const appId = config.appId as string | undefined
-        const rawAppSecret = config.appSecret as string | undefined
-        const appSecret = rawAppSecret?.startsWith('enc:') ? decryptCredential(rawAppSecret) : rawAppSecret
-        if (!appId || !appSecret) {
-            return Response.redirect(`${adminBase}/${configId}?threads_oauth_error=${encodeURIComponent('App ID/Secret not configured')}`, 302)
+        const appCreds = getMetaAppCredentials()
+        if (!appCreds) {
+            return Response.redirect(`${adminBase}/${configId}?threads_oauth_error=${encodeURIComponent('Meta App not configured on this deployment — set META_APP_ID and META_APP_SECRET.')}`, 302)
         }
 
         // Step 1: code -> short-lived Threads user token
         const shortLived = await threadsPost<{ access_token?: string; user_id?: string }>('/oauth/access_token', {
-            client_id: appId,
-            client_secret: appSecret,
+            client_id: appCreds.appId,
+            client_secret: appCreds.appSecret,
             grant_type: 'authorization_code',
             redirect_uri: callbackRedirectUri(),
             code,
@@ -126,12 +127,17 @@ export const threadsOAuthCallbackEndpoint: Endpoint = {
         }
 
         // Step 2: short-lived -> long-lived Threads token (~60 days)
-        const longLived = await threadsGet<{ access_token?: string }>('/access_token', {
+        const longLived = await threadsGet<{ access_token?: string; expires_in?: number }>('/access_token', {
             grant_type: 'th_exchange_token',
-            client_secret: appSecret,
+            client_secret: appCreds.appSecret,
             access_token: shortLived.data.access_token,
         })
         const finalToken = longLived.ok && longLived.data?.access_token ? longLived.data.access_token : shortLived.data.access_token
+        // No refresh_token grant on the Threads API either — same tracking
+        // rationale as metaOAuth.ts's oauthExpiresAt.
+        const threadsTokenExpiresAt = new Date(
+            Date.now() + (longLived.ok ? (longLived.data?.expires_in ?? 60 * 24 * 60 * 60) : 60 * 24 * 60 * 60) * 1000,
+        ).toISOString()
 
         // Step 3: fetch profile (id, username)
         const profile = await threadsGet<{ id?: string; username?: string }>('/v1.0/me', {
@@ -145,6 +151,7 @@ export const threadsOAuthCallbackEndpoint: Endpoint = {
             data: {
                 threadsEnabled: true,
                 threadsAccessToken: encryptCredential(finalToken),
+                threadsTokenExpiresAt,
                 threadsUserId: profile.data?.id || null,
                 threadsUsername: profile.data?.username || null,
             } as any,

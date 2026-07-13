@@ -5,6 +5,7 @@ import { useDocumentInfo } from '@payloadcms/ui'
 import {
     FieldWrapper, LoadingState, EmptyState, ErrorState, SuccessState,
     ConnectButton, StyledSelect, useOAuthRedirectMessage,
+    useMetaAppInfo, MetaAppInfoBadge, DetailList,
 } from '../shared'
 
 interface DocSnapshot {
@@ -13,7 +14,7 @@ interface DocSnapshot {
     facebookPageName?: string
     instagramBusinessAccountId?: string
     instagramUsername?: string
-    appId?: string
+    businessManagerId?: string
 }
 
 interface PageOption {
@@ -30,6 +31,7 @@ interface PageOption {
 export const MetaConnectPanelField: React.FC = () => {
     const { id } = useDocumentInfo()
     const redirectMsg = useOAuthRedirectMessage('meta_oauth_success', 'meta_oauth_error')
+    const appInfo = useMetaAppInfo()
 
     const [doc, setDoc] = useState<DocSnapshot | null>(null)
     const [loadingDoc, setLoadingDoc] = useState(false)
@@ -94,14 +96,16 @@ export const MetaConnectPanelField: React.FC = () => {
 
     if (!id) {
         return (
-            <FieldWrapper label="Connect to Meta Business">
-                <EmptyState message="Save the document first (with at least a Meta App ID), then Connect will be available." />
+            <FieldWrapper path="metaConnectPanel" label="Connect to Meta Business">
+                <MetaAppInfoBadge appInfo={appInfo} />
+                <EmptyState message="Save the document first, then Connect will be available." />
             </FieldWrapper>
         )
     }
 
     return (
-        <FieldWrapper label="Connect to Meta Business">
+        <FieldWrapper path="metaConnectPanel" label="Connect to Meta Business">
+            <MetaAppInfoBadge appInfo={appInfo} />
             {redirectMsg.error && <ErrorState message={redirectMsg.error} />}
             {redirectMsg.success && !isConnected && <SuccessState message="Connected! Fetching your Pages…" />}
             {actionError && <ErrorState message={actionError} />}
@@ -109,18 +113,23 @@ export const MetaConnectPanelField: React.FC = () => {
             {loadingDoc ? (
                 <LoadingState message="Loading connection status…" />
             ) : !isConnected ? (
-                <>
-                    {!doc?.appId && (
-                        <EmptyState message="Set a Meta App ID above first, then Connect." />
-                    )}
-                    <ConnectButton onClick={startConnect} disabled={!doc?.appId}>
-                        Connect to Meta Business
-                    </ConnectButton>
-                </>
+                <ConnectButton onClick={startConnect} disabled={!appInfo.configured}>
+                    Connect to Meta Business
+                </ConnectButton>
             ) : hasPage ? (
                 <>
-                    <SuccessState
-                        message={`Connected — Facebook Page: ${doc?.facebookPageName} (${doc?.facebookPageId})${doc?.instagramUsername ? ` · Instagram: @${doc.instagramUsername}` : ' · No Instagram Business account linked to this Page'}`}
+                    <SuccessState message="Connected to Meta Business" />
+                    <DetailList
+                        items={[
+                            { label: 'Business Manager ID', value: doc?.businessManagerId || '—' },
+                            { label: 'Facebook Page', value: `${doc?.facebookPageName} (${doc?.facebookPageId})` },
+                            {
+                                label: 'Instagram',
+                                value: doc?.instagramUsername
+                                    ? `@${doc.instagramUsername} (${doc.instagramBusinessAccountId})`
+                                    : 'No Instagram Business account linked to this Page',
+                            },
+                        ]}
                     />
                     <ConnectButton onClick={loadPages} disabled={loadingPages}>
                         {loadingPages ? 'Loading…' : 'Change Page'}
