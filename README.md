@@ -31,6 +31,7 @@ It provides:
 - [The `meta-config` Collection](#the-meta-config-collection)
 - [Conversions API / Workflow Steps](#conversions-api--workflow-steps)
 - [Commerce Catalog Feed](#commerce-catalog-feed)
+- [Endpoints](#endpoints)
 - [Why Not Rebuild WhatsApp?](#why-not-rebuild-whatsapp)
 - [Security](#security)
 - [What's Not Built Yet](#whats-not-built-yet)
@@ -107,7 +108,7 @@ Go to **Automation → Workflows**:
 
 - Create or edit a workflow (e.g. triggered on order creation).
 - In **Steps**, add a **Trigger Meta Conversion Event** block.
-- Pick the event name (`Purchase`, `Lead`, `AddToCart`, etc.) and map `value`/`currency`/`content_name` using `{{var}}` references into the workflow context.
+- Pick the event name (`Purchase`, `Lead`, `AddToCart`, etc.) and map `value`/`currency`/`content_name` using `{{var}}` references into the workflow context — using `{{var}}` references into the workflow context.
 
 ---
 
@@ -153,9 +154,9 @@ export interface MetaPluginOptions {
 
 | Variable | Required | Description |
 |---|---|---|
-| `META_ENCRYPTION_KEY` | Production: yes | 32-byte hex key (`openssl rand -hex 32`) for AES-256-GCM credential encryption. |
+| `META_ENCRYPTION_KEY` | Production: yes | 32-byte hex key (`openssl rand -hex 32`) for AES-256-GCM credential encryption. Separate from `payload-erpnext-plugin`'s `ERPNEXT_ENCRYPTION_KEY` — rotating one doesn't affect the other. |
 | `ALLOW_PLAINTEXT_META_CREDS` | No | Set to `true` to explicitly allow plain-text credential storage in production. Do not set this unless you understand the risk (a DB dump/backup leaks every tenant's Meta access token). |
-| `PAYLOAD_PUBLIC_SERVER_URL` | For Catalog feed + OAuth | Your Payload instance's public base URL. Used to build absolute image URLs in the Commerce Catalog feed, and the OAuth callback redirect URIs (`/api/meta-oauth/callback`, `/api/threads-oauth/callback`). |
+| `PAYLOAD_PUBLIC_SERVER_URL` | For Catalog feed + OAuth | Used to build absolute image URLs in the Commerce Catalog feed, and the OAuth callback redirect URIs (`/api/meta-oauth/callback`, `/api/threads-oauth/callback`). Already set for the host CMS's other public-facing needs. |
 | `META_OAUTH_STATE_SECRET` | No | HMAC key for signing the OAuth `state` param. Falls back to `META_ENCRYPTION_KEY` if unset — only set this separately if you want state-signing and credential-encryption keys to rotate independently. |
 
 ---
@@ -172,7 +173,7 @@ One document per site. Every credential field is directly editable (manual entry
 | 💬 WhatsApp Business | `whatsappEnabled`, `whatsappPhoneNumberId`, `whatsappBusinessAccountId` | Populates the host CMS's existing `lib/whatsapp.ts` `metaCloud` provider — no plugin code needed for outbound sending. |
 | 🧵 Threads | `threadsEnabled`, **Connect Threads** button, `threadsUserId`/`threadsUsername` (read-only, set by Connect), `threadsAccessToken` (hidden, encrypted) | Independent OAuth flow — see [Connecting Facebook, Instagram, and Threads](#connecting-facebook-instagram-and-threads). |
 
-Credentials (`appSecret`, `accessToken`, `oauthUserAccessToken`, `threadsAccessToken`) are AES-256-GCM encrypted at rest and masked in the admin UI (`••••1234`) for any authenticated non-internal request.
+Credentials (`appSecret`, `accessToken`, `oauthUserAccessToken`, `threadsAccessToken`) are AES-256-GCM encrypted at rest and masked in the admin UI (`••••1234`) for any authenticated non-internal request — the same pattern many Payload plugins use for sensitive credential fields.
 
 ---
 
@@ -187,7 +188,7 @@ const creds = await getMetaCredentials(payload, 'my-site-slug')
 if (creds?.pixelId) {
   await sendConversionEvent(creds, {
     eventName: 'Purchase',
-    customData: { value: 129.99, currency: 'USD' },
+    customData: { value: 12500, currency: 'USD' },
   })
 }
 ```
@@ -213,6 +214,24 @@ Generic by design: reads whichever collection `catalogSourceCollection` designat
 | `link` | `catalogItemUrlTemplate` with `{slug}` substituted |
 
 Items missing a `title` or `price` are skipped rather than emitted as invalid rows — Meta rejects the whole feed on malformed entries, so a few incomplete source documents shouldn't take down catalog sync for everything else.
+
+---
+
+## Endpoints
+
+All `/meta-oauth/*` and `/threads-oauth/start` endpoints require an authenticated `admin`/`super-admin` session. The two `*-oauth/callback` endpoints are hit by Meta's/Threads' redirect (not called directly) and verify the signed `state` param instead.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET`  | `/api/meta-catalog/feed?site=<slug>` | Public, unauthenticated. Commerce Catalog CSV feed. |
+| `GET`  | `/api/meta-oauth/start?configId=<id>` | Redirects to Meta's OAuth2 authorize screen. |
+| `GET`  | `/api/meta-oauth/callback` | Facebook/Instagram OAuth2 callback — exchanges the code, stores the long-lived user token. |
+| `GET`  | `/api/meta-oauth/pages?configId=<id>` | Lists Facebook Pages reachable by the connected account. |
+| `POST` | `/api/meta-oauth/select-page` | Body `{ configId, pageId }` — fetches that Page's token + linked Instagram account, stores both. |
+| `GET`  | `/api/meta-oauth/pixels?configId=<id>` | Lists Pixels owned by the configured Business Manager. |
+| `POST` | `/api/meta-oauth/pixels` | Body `{ configId, name }` — creates a new Pixel scoped to the Business Manager. |
+| `GET`  | `/api/threads-oauth/start?configId=<id>` | Redirects to Threads' OAuth2 authorize screen. |
+| `GET`  | `/api/threads-oauth/callback` | Threads OAuth2 callback — exchanges the code, stores the long-lived Threads token + profile. |
 
 ---
 
