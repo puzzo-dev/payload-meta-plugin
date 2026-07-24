@@ -141,11 +141,25 @@ export function getMaskedMetaAppId(): string | null {
 
 const STATE_TTL_MS = 10 * 60 * 1000 // 10 minutes — long enough for a user to complete the OAuth consent screen
 
+let cachedStateSecret: string | null = null
+
 function getStateSecret(): string {
-    // Falls back to the encryption key (if set) rather than introducing a
-    // second required env var just for this — both exist for the same
-    // "don't trust unsigned/unencrypted plugin data" reason.
-    return process.env.META_OAUTH_STATE_SECRET || process.env.META_ENCRYPTION_KEY || 'insecure-dev-only-state-secret'
+    if (cachedStateSecret) return cachedStateSecret
+    const fromEnv = process.env.META_OAUTH_STATE_SECRET || process.env.META_ENCRYPTION_KEY
+    if (fromEnv) {
+        cachedStateSecret = fromEnv
+        return cachedStateSecret
+    }
+    if (process.env.NODE_ENV === 'production') {
+        throw new Error(
+            '[meta-crypto] FATAL: META_OAUTH_STATE_SECRET or META_ENCRYPTION_KEY is required ' +
+            'for OAuth state signing in production.',
+        )
+    }
+    // Dev-only: generate an ephemeral random secret so HMAC works without a hardcoded value.
+    // This secret is per-process and won't survive restarts, which is fine for local dev.
+    cachedStateSecret = randomBytes(32).toString('hex')
+    return cachedStateSecret
 }
 
 /** Sign a configId into an opaque, tamper-evident state token for the OAuth `state` param. */
