@@ -1,6 +1,6 @@
 {
   "name": "payload-meta-plugin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Payload CMS plugin for connecting multi-tenant sites to Meta's network (Facebook Pixel + Conversions API, Facebook/Instagram Commerce Catalog, WhatsApp Business Cloud API). Modular per-channel, per-site — nothing hardcoded to one product line.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -79,6 +79,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
     "next": "16.2.6",
     "payload": "^3.0.0",
     "tsup": "^8.0.0",
