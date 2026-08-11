@@ -55,10 +55,20 @@ function getEncryptionKey(): Buffer | null {
 // Invoke immediately on module load to fail-fast if misconfigured.
 getEncryptionKey()
 
-/** Test-only helper to reset the cached encryption key state. */
+/**
+ * Test-only helper: drop every cached secret so the next call re-reads the
+ * environment.
+ *
+ * This used to clear only the encryption key, leaving `cachedStateSecret`
+ * populated from a previous load. A test that changed META_OAUTH_STATE_SECRET
+ * and expected the new value silently kept verifying against the old one — so a
+ * test asserting that a token signed with a different secret is rejected passed
+ * for the wrong reason, or failed confusingly. Both caches are cleared here.
+ */
 export function __resetEncryptionKey(): void {
     cachedKey = null
     initialized = false
+    cachedStateSecret = null
 }
 
 /**
