@@ -1,7 +1,7 @@
-import type { Endpoint, CollectionSlug } from 'payload'
+import type { Endpoint } from 'payload'
 import { encryptCredential, decryptCredential, signOAuthState, verifyOAuthState, getMetaAppCredentials, getMaskedMetaAppId } from '../utils/metaCrypto'
 import { graphGet, graphPost, GRAPH_API_VERSION } from '../utils/metaGraphClient'
-import { callerOwnsConfigSite, type UserWithRole } from '../types'
+import { callerOwnsConfigSite, getUserWithRole, asCollectionSlug } from '../types'
 
 /**
  * Meta Business Login connect flow — same idea as the official "Meta for
@@ -35,7 +35,7 @@ const OAUTH_SCOPES = [
 ].join(',')
 
 function isAdminOrAbove(req: { user?: unknown }): boolean {
-    const role = (req.user as unknown as UserWithRole | undefined)?.role
+    const role = getUserWithRole(req.user)?.role
     return role === 'super-admin' || role === 'admin'
 }
 
@@ -48,13 +48,13 @@ function callbackRedirectUri(): string {
 }
 
 async function loadConfig(payload: Parameters<Endpoint['handler']>[0]['payload'], configId: string) {
-    return payload.findByID({
-        collection: 'meta-config' as unknown as CollectionSlug,
+    return (await payload.findByID({
+        collection: asCollectionSlug('meta-config'),
         id: configId,
         depth: 0,
         overrideAccess: true,
         context: { preventMasking: true },
-    }) as unknown as Record<string, unknown>
+    })) as Record<string, unknown>
 }
 
 // ── GET /meta-oauth/app-info ────────────────────────────────────────────────
@@ -175,12 +175,12 @@ export const metaOAuthCallbackEndpoint: Endpoint = {
         // then this collection-list status field should not claim the
         // config is usable.
         await req.payload.update({
-            collection: 'meta-config' as unknown as CollectionSlug,
+            collection: asCollectionSlug('meta-config'),
             id: configId,
             data: {
                 authMethod: 'oauth',
                 oauthUserAccessToken: encryptCredential(longLived.data.access_token),
-            } as any,
+            },
             overrideAccess: true,
             context: { skipConnectionTest: true },
         })
@@ -268,7 +268,7 @@ export const metaOAuthSelectPageEndpoint: Endpoint = {
         const oauthExpiresAt = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString()
 
         await req.payload.update({
-            collection: 'meta-config' as unknown as CollectionSlug,
+            collection: asCollectionSlug('meta-config'),
             id: configId,
             data: {
                 facebookPageId: page.id,
@@ -281,7 +281,7 @@ export const metaOAuthSelectPageEndpoint: Endpoint = {
                 // connection is genuinely usable, not the earlier OAuth
                 // handshake step (see the comment in the callback endpoint).
                 connectionStatus: 'connected',
-            } as any,
+            },
             overrideAccess: true,
             context: { skipConnectionTest: true },
         })
@@ -362,9 +362,9 @@ export const metaOAuthCreatePixelEndpoint: Endpoint = {
         }
 
         await req.payload.update({
-            collection: 'meta-config' as unknown as CollectionSlug,
+            collection: asCollectionSlug('meta-config'),
             id: configId,
-            data: { pixelId: result.data.id, pixelEnabled: true } as any,
+            data: { pixelId: result.data.id, pixelEnabled: true },
             overrideAccess: true,
             context: { skipConnectionTest: true },
         })

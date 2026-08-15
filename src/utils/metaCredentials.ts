@@ -1,6 +1,6 @@
-import type { Endpoint, CollectionSlug, PayloadRequest } from 'payload'
+import type { Endpoint, PayloadRequest } from 'payload'
 import { decryptCredential } from './metaCrypto'
-import type { MetaCredentials } from '../types'
+import { asCollectionSlug, type MetaCredentials } from '../types'
 
 /**
  * Resolve a site's active Meta credentials from the meta-config collection.
@@ -32,9 +32,9 @@ export async function getMetaCredentials(
         if (expiresAt && new Date(expiresAt).getTime() <= Date.now()) {
             payload.logger.warn(`[MetaCredentials] accessToken expired for config ${cfg.id} — marking disconnected.`)
             payload.update({
-                collection: 'meta-config' as unknown as CollectionSlug,
+                collection: asCollectionSlug('meta-config'),
                 id: cfg.id as string | number,
-                data: { connectionStatus: 'disconnected' } as any,
+                data: { connectionStatus: 'disconnected' },
                 overrideAccess: true,
                 context: { skipConnectionTest: true },
             }).catch((err) => payload.logger.warn(`[MetaCredentials] Failed to mark config ${cfg.id} disconnected: ${err}`))
@@ -74,7 +74,7 @@ export async function getMetaCredentials(
     if (sites.totalDocs === 0) return null
 
     const configs = await payload.find({
-        collection: 'meta-config' as unknown as CollectionSlug,
+        collection: asCollectionSlug('meta-config'),
         where: { site: { equals: sites.docs[0].id }, isActive: { equals: true } },
         limit: 1,
         depth: 0,
@@ -83,5 +83,5 @@ export async function getMetaCredentials(
     })
     if (configs.totalDocs === 0) return null
 
-    return buildCreds(configs.docs[0] as unknown as Record<string, unknown>)
+    return buildCreds(configs.docs[0] as Record<string, unknown>)
 }

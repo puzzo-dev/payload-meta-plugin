@@ -1,7 +1,7 @@
-import type { Endpoint, CollectionSlug } from 'payload'
+import type { Endpoint } from 'payload'
 import { encryptCredential, signOAuthState, verifyOAuthState, getMetaAppCredentials } from '../utils/metaCrypto'
 import { threadsGet, threadsPost } from '../utils/metaGraphClient'
-import { callerOwnsConfigSite, type UserWithRole } from '../types'
+import { callerOwnsConfigSite, getUserWithRole, asCollectionSlug } from '../types'
 
 /**
  * Threads connect flow. Threads API is a genuinely separate product from the
@@ -19,7 +19,7 @@ import { callerOwnsConfigSite, type UserWithRole } from '../types'
 const THREADS_SCOPES = 'threads_basic,threads_content_publish'
 
 function isAdminOrAbove(req: { user?: unknown }): boolean {
-    const role = (req.user as unknown as UserWithRole | undefined)?.role
+    const role = getUserWithRole(req.user)?.role
     return role === 'super-admin' || role === 'admin'
 }
 
@@ -32,13 +32,13 @@ function callbackRedirectUri(): string {
 }
 
 async function loadConfig(payload: Parameters<Endpoint['handler']>[0]['payload'], configId: string) {
-    return payload.findByID({
-        collection: 'meta-config' as unknown as CollectionSlug,
+    return (await payload.findByID({
+        collection: asCollectionSlug('meta-config'),
         id: configId,
         depth: 0,
         overrideAccess: true,
         context: { preventMasking: true },
-    }) as unknown as Record<string, unknown>
+    })) as Record<string, unknown>
 }
 
 // ── GET /threads-oauth/start?configId=<id> ─────────────────────────────────
@@ -146,7 +146,7 @@ export const threadsOAuthCallbackEndpoint: Endpoint = {
         })
 
         await req.payload.update({
-            collection: 'meta-config' as unknown as CollectionSlug,
+            collection: asCollectionSlug('meta-config'),
             id: configId,
             data: {
                 threadsEnabled: true,
@@ -154,7 +154,7 @@ export const threadsOAuthCallbackEndpoint: Endpoint = {
                 threadsTokenExpiresAt,
                 threadsUserId: profile.data?.id || null,
                 threadsUsername: profile.data?.username || null,
-            } as any,
+            },
             overrideAccess: true,
             context: { skipConnectionTest: true },
         })

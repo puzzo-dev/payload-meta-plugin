@@ -25,9 +25,9 @@ const originalFetch = globalThis.fetch
 
 /** Capture the outgoing request instead of calling Meta. */
 function stubFetch(response: { ok: boolean; status: number; body?: unknown }) {
-    const calls: Array<{ url: string; body: any }> = []
-    globalThis.fetch = (async (url: any, init: any) => {
-        calls.push({ url: String(url), body: JSON.parse(init.body) })
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+        calls.push({ url: String(url), body: JSON.parse(String(init?.body ?? '{}')) })
         return {
             ok: response.ok,
             status: response.status,
@@ -35,6 +35,12 @@ function stubFetch(response: { ok: boolean; status: number; body?: unknown }) {
         }
     }) as never
     return calls
+}
+
+/** Extract the first event from the captured request body. */
+function firstEvent(calls: Array<{ url: string; body: Record<string, unknown> }>): Record<string, unknown> {
+    const data = calls[0].body.data as Array<Record<string, unknown>>
+    return data[0]
 }
 
 beforeEach(() => {
@@ -48,7 +54,7 @@ afterEach(() => {
 describe('sendConversionEvent — configuration guards', () => {
     it('refuses to send when the site has no Pixel configured', async () => {
         const calls = stubFetch({ ok: true, status: 200 })
-        const result = await sendConversionEvent({ ...CREDS, pixelId: undefined } as unknown as MetaCredentials, {
+        const result = await sendConversionEvent({ ...CREDS, pixelId: '' }, {
             eventName: 'Purchase',
         })
         assert.equal(result.ok, false)
@@ -58,7 +64,7 @@ describe('sendConversionEvent — configuration guards', () => {
 
     it('refuses to send when the site has no access token', async () => {
         const calls = stubFetch({ ok: true, status: 200 })
-        const result = await sendConversionEvent({ ...CREDS, accessToken: undefined } as unknown as MetaCredentials, {
+        const result = await sendConversionEvent({ ...CREDS, accessToken: '' }, {
             eventName: 'Purchase',
         })
         assert.equal(result.ok, false)
@@ -93,29 +99,29 @@ describe('sendConversionEvent — what is sent to Meta', () => {
         })
         const sent = JSON.stringify(calls[0].body)
         assert.ok(!sent.includes('@'), 'no email address should appear anywhere in the payload')
-        assert.deepEqual(calls[0].body.data[0].user_data.em, [emailHash])
-        assert.deepEqual(calls[0].body.data[0].user_data.ph, [phoneHash])
+        assert.deepEqual((firstEvent(calls).user_data as Record<string, unknown[]>).em, [emailHash])
+        assert.deepEqual((firstEvent(calls).user_data as Record<string, unknown[]>).ph, [phoneHash])
     })
 
     it('omits user_data entirely when there is no personal data to send', async () => {
         const calls = stubFetch({ ok: true, status: 200 })
         await sendConversionEvent(CREDS, { eventName: 'PageView' })
-        assert.equal(calls[0].body.data[0].user_data, undefined)
+        assert.equal(firstEvent(calls).user_data, undefined)
     })
 
     it('defaults the event time to now and the source to website', async () => {
         const calls = stubFetch({ ok: true, status: 200 })
         const before = Math.floor(Date.now() / 1000)
         await sendConversionEvent(CREDS, { eventName: 'Lead' })
-        const event = calls[0].body.data[0]
-        assert.ok(event.event_time >= before, 'event_time should be a current unix timestamp')
+        const event = firstEvent(calls)
+        assert.ok((event.event_time as number) >= before, 'event_time should be a current unix timestamp')
         assert.equal(event.action_source, 'website')
     })
 
     it('uses an explicit event time when the caller supplies one', async () => {
         const calls = stubFetch({ ok: true, status: 200 })
         await sendConversionEvent(CREDS, { eventName: 'Purchase', eventTime: 1700000000 })
-        assert.equal(calls[0].body.data[0].event_time, 1700000000)
+        assert.equal(firstEvent(calls).event_time, 1700000000)
     })
 
     it('passes through the purchase value and currency', async () => {
@@ -124,13 +130,13 @@ describe('sendConversionEvent — what is sent to Meta', () => {
             eventName: 'Purchase',
             customData: { value: 15000, currency: 'NGN' },
         })
-        assert.deepEqual(calls[0].body.data[0].custom_data, { value: 15000, currency: 'NGN' })
+        assert.deepEqual(firstEvent(calls).custom_data, { value: 15000, currency: 'NGN' })
     })
 
     it('includes the deduplication id when one is supplied', async () => {
         const calls = stubFetch({ ok: true, status: 200 })
         await sendConversionEvent(CREDS, { eventName: 'Purchase', eventId: 'order-42' })
-        assert.equal(calls[0].body.data[0].event_id, 'order-42')
+        assert.equal(firstEvent(calls).event_id, 'order-42')
     })
 })
 

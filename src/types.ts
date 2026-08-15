@@ -1,4 +1,4 @@
-import type { Access, PayloadRequest } from 'payload'
+import type { Access, PayloadRequest, CollectionSlug } from 'payload'
 import { timingSafeEqual } from 'node:crypto'
 
 /**
@@ -24,7 +24,7 @@ export const authenticated: Access = ({ req: { user } }) => Boolean(user)
 
 export const superAdminOnly: Access = ({ req: { user } }) => {
     if (!user) return false
-    return (user as unknown as UserWithRole).role === 'super-admin'
+    return getUserWithRole(user)?.role === 'super-admin'
 }
 
 export function isInternalAuth(req: { headers?: { get: (name: string) => string | null } } | PayloadRequest): boolean {
@@ -63,7 +63,7 @@ export const getUserSiteId = (user: UserWithRole): string | number | null => {
  * helper in the platform).
  */
 export function callerOwnsConfigSite(req: { user?: unknown }, config: Record<string, unknown>): boolean {
-    const user = req.user as unknown as UserWithRole | undefined
+    const user = getUserWithRole(req.user)
     if (!user) return false
     if (user.role === 'super-admin') return true
     const configSite = typeof config.site === 'object' && config.site !== null
@@ -131,3 +131,33 @@ export type RuntimeCollectionSlug =
     | 'sites'
     | 'organizations'
     | 'meta-config'
+
+/**
+ * Safely extract a UserWithRole from an unknown request user.
+ * Payload's `req.user` is typed as the host's User which doesn't include
+ * `role`/`organization`/`site` — this helper reads those fields via bracket
+ * notation with runtime checks instead of `as unknown as UserWithRole`.
+ */
+export function getUserWithRole(user: unknown): UserWithRole | undefined {
+    if (!user || typeof user !== 'object') return undefined
+    const obj = user as Record<string, unknown>
+    if (typeof obj.role !== 'string') return undefined
+    return {
+        id: obj.id as string | number,
+        role: obj.role,
+        email: typeof obj.email === 'string' ? obj.email : undefined,
+        organization: obj.organization as UserWithRole['organization'],
+        site: obj.site as UserWithRole['site'],
+    }
+}
+
+/**
+ * Cast a string to the host's CollectionSlug type.
+ * Plugin collections (like 'meta-config') or dynamically-configured collection
+ * names may not be in the host's generated payload-types.ts. Centralized here
+ * so the cast only appears in one place — every call site uses this helper
+ * instead of scattering `as unknown as CollectionSlug` across the codebase.
+ */
+export function asCollectionSlug(slug: string): CollectionSlug {
+    return slug as CollectionSlug
+}

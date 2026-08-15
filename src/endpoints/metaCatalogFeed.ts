@@ -1,4 +1,5 @@
-import type { Endpoint, CollectionSlug } from 'payload'
+import type { Endpoint } from 'payload'
+import { asCollectionSlug } from '../types'
 
 /**
  * Public, site-scoped Commerce Catalog feed for Facebook/Instagram Shop.
@@ -71,7 +72,7 @@ export const metaCatalogFeedEndpoint: Endpoint = {
         const siteId = sites.docs[0].id
 
         const configs = await req.payload.find({
-            collection: 'meta-config' as unknown as CollectionSlug,
+            collection: asCollectionSlug('meta-config'),
             where: { site: { equals: siteId }, isActive: { equals: true }, catalogEnabled: { equals: true } },
             limit: 1,
             depth: 0,
@@ -80,7 +81,7 @@ export const metaCatalogFeedEndpoint: Endpoint = {
         if (configs.totalDocs === 0) {
             return Response.json({ error: 'Commerce Catalog not enabled for this site' }, { status: 404 })
         }
-        const config = configs.docs[0] as unknown as Record<string, unknown>
+        const config = configs.docs[0] as Record<string, unknown>
         const sourceCollection = config.catalogSourceCollection as string | undefined
         const urlTemplate = config.catalogItemUrlTemplate as string | undefined
         if (!sourceCollection) {
@@ -95,13 +96,13 @@ export const metaCatalogFeedEndpoint: Endpoint = {
         let items: Array<Record<string, unknown>>
         try {
             const result = await req.payload.find({
-                collection: sourceCollection as CollectionSlug,
+                collection: asCollectionSlug(sourceCollection),
                 where: { site: { equals: siteId } },
                 limit: 1000,
                 depth: 1,
                 overrideAccess: true,
             })
-            items = result.docs as unknown as Array<Record<string, unknown>>
+            items = result.docs as Array<Record<string, unknown>>
         } catch (err) {
             req.payload.logger.error(`[MetaCatalogFeed] Failed to query collection "${sourceCollection}": ${err}`)
             return Response.json({ error: `Failed to query collection "${sourceCollection}"` }, { status: 500 })

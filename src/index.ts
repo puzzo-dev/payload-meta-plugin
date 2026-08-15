@@ -1,4 +1,4 @@
-import type { Plugin } from 'payload'
+import type { Plugin, Field, BlocksField } from 'payload'
 import { MetaConfig } from './collections/MetaConfig'
 import { metaCatalogFeedEndpoint } from './endpoints/metaCatalogFeed'
 import { metaConversionEventHandler } from './actions/metaActions'
@@ -66,8 +66,8 @@ export function metaPlugin(options: MetaPluginOptions = {}): Plugin {
         const modifiedCollections = (config.collections || []).map((collection) => {
             if (collection.slug !== 'workflows') return collection
 
-            const stepsField = collection.fields.find((f: any) => f.name === 'steps') as any
-            if (!stepsField || stepsField.type !== 'blocks') return collection
+            const stepsField = collection.fields.find((f: Field): f is BlocksField => 'name' in f && f.name === 'steps' && f.type === 'blocks')
+            if (!stepsField) return collection
 
             stepsField.blocks = [
                 ...(stepsField.blocks || []),

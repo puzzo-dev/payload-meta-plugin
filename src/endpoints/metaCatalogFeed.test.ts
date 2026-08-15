@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import type { PayloadRequest } from 'payload'
 
 import { metaCatalogFeedEndpoint } from './metaCatalogFeed.js'
 
@@ -56,7 +57,7 @@ const CONFIG = {
 }
 
 const run = (r: unknown) =>
-    (metaCatalogFeedEndpoint.handler as unknown as (req: unknown) => Promise<Response>)(r)
+    metaCatalogFeedEndpoint.handler(r as PayloadRequest)
 
 async function csvOf(items: Array<Record<string, unknown>>) {
     const { req } = makeReq({ site: SITE.slug, config: CONFIG, items })

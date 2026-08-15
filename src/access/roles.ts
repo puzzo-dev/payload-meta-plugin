@@ -1,11 +1,12 @@
 import type { Access } from 'payload'
-import { getUserSiteId, isInternalAuth, UserWithRole } from '../types'
+import { getUserSiteId, isInternalAuth, getUserWithRole } from '../types'
 
 export const siteScopedRead = (siteField = 'site'): Access => {
     return ({ req }) => {
         if (isInternalAuth(req)) return true
         if (!req.user) return false
-        const u = req.user as unknown as UserWithRole
+        const u = getUserWithRole(req.user)
+        if (!u) return false
         if (u.role === 'super-admin') return true
         const siteId = getUserSiteId(u)
         if (!siteId) return false
@@ -17,7 +18,8 @@ export const siteScopedCreate = (siteField = 'site'): Access => {
     return ({ req, data }) => {
         if (isInternalAuth(req)) return true
         if (!req.user) return false
-        const u = req.user as unknown as UserWithRole
+        const u = getUserWithRole(req.user)
+        if (!u) return false
         if (u.role === 'super-admin') return true
         if (!['admin', 'editor'].includes(u.role)) return false
         const siteId = getUserSiteId(u)
@@ -35,7 +37,8 @@ export const siteScopedUpdate = (siteField = 'site'): Access => {
     return ({ req }) => {
         if (isInternalAuth(req)) return true
         if (!req.user) return false
-        const u = req.user as unknown as UserWithRole
+        const u = getUserWithRole(req.user)
+        if (!u) return false
         if (u.role === 'super-admin') return true
         const siteId = getUserSiteId(u)
         if (!siteId) return false
@@ -47,7 +50,8 @@ export const siteScopedDelete = (siteField = 'site'): Access => {
     return ({ req }) => {
         if (isInternalAuth(req)) return true
         if (!req.user) return false
-        const u = req.user as unknown as UserWithRole
+        const u = getUserWithRole(req.user)
+        if (!u) return false
         if (u.role === 'super-admin') return true
         if (u.role === 'admin') {
             const siteId = getUserSiteId(u)

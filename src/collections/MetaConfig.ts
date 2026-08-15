@@ -1,10 +1,10 @@
-import type { CollectionConfig, CollectionAfterChangeHook, CollectionSlug, FieldAccess } from 'payload'
+import type { CollectionConfig, CollectionAfterChangeHook, FieldAccess } from 'payload'
 import {
     siteScopedCreate, siteScopedDelete, siteScopedRead, siteScopedUpdate
 } from '../access/roles';
 import { organizationField } from '../fields/organizationField';
 import { encryptCredential, decryptCredential } from '../utils/metaCrypto';
-import type { UserWithRole } from '../types';
+import { getUserWithRole, asCollectionSlug } from '../types';
 
 /**
  * Field-level guard: only admins/super-admins (or trusted server calls using
@@ -14,7 +14,7 @@ import type { UserWithRole } from '../types';
  * payload-erpnext-plugin's adminOrAboveField.
  */
 const adminOrAboveField: FieldAccess = ({ req }) =>
-    ['super-admin', 'admin'].includes((req?.user as unknown as UserWithRole | undefined)?.role ?? '')
+    ['super-admin', 'admin'].includes(getUserWithRole(req?.user)?.role ?? '')
 
 // ── Credential encryption hooks (reused by accessToken, oauthUserAccessToken, threadsAccessToken) ──
 
@@ -32,7 +32,7 @@ async function encryptBeforeChange({ value, originalDoc, field, req }: { value: 
             throw new Error(`Cannot save masked credential for ${field.name}. Please re-enter it.`)
         }
         const rawConfig = await req.payload.findByID({
-            collection: 'meta-config' as unknown as CollectionSlug,
+            collection: asCollectionSlug('meta-config'),
             id: originalDoc.id,
             depth: 0,
             overrideAccess: true,
@@ -71,12 +71,12 @@ const testMetaConnection: CollectionAfterChangeHook = async ({ doc, previousDoc,
     }
 
     const rawConfig = await req.payload.findByID({
-        collection: 'meta-config' as unknown as CollectionSlug,
+        collection: asCollectionSlug('meta-config'),
         id: doc.id,
         depth: 0,
         overrideAccess: true,
         context: { preventMasking: true, skipConnectionTest: true },
-    }) as unknown as Record<string, unknown>
+    }) as Record<string, unknown>
 
     const accessToken = rawConfig.accessToken as string | undefined
     if (!accessToken) return doc
@@ -93,9 +93,9 @@ const testMetaConnection: CollectionAfterChangeHook = async ({ doc, previousDoc,
         connected = res.ok
 
         await req.payload.update({
-            collection: 'meta-config' as unknown as CollectionSlug,
+            collection: asCollectionSlug('meta-config'),
             id: doc.id,
-            data: { connectionStatus: connected ? 'connected' : 'disconnected' } as any,
+            data: { connectionStatus: connected ? 'connected' : 'disconnected' },
             overrideAccess: true,
             context: { skipConnectionTest: true },
         })
@@ -105,9 +105,9 @@ const testMetaConnection: CollectionAfterChangeHook = async ({ doc, previousDoc,
         req.payload.logger.warn(`[MetaConfig] Connection test failed: ${err}`)
         try {
             await req.payload.update({
-                collection: 'meta-config' as unknown as CollectionSlug,
+                collection: asCollectionSlug('meta-config'),
                 id: doc.id,
-                data: { connectionStatus: 'disconnected' } as any,
+                data: { connectionStatus: 'disconnected' },
                 overrideAccess: true,
                 context: { skipConnectionTest: true },
             })
