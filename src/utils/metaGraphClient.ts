@@ -78,6 +78,42 @@ export async function graphPost<T = Record<string, unknown>>(
     return { ok: true, status: res.status, data: (await res.json()) as T }
 }
 
+/** JSON body. The token stays in the Authorization header so it is not part of the payload. */
+export async function graphPostJson<T = Record<string, unknown>>(
+    path: string,
+    body: Record<string, unknown>,
+    accessToken: string,
+): Promise<GraphResult<T>> {
+    const res = await callWithRetry(`${GRAPH_BASE}${path}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(body),
+    })
+    if (!res.ok) return { ok: false, status: res.status, error: await parseGraphError(res) }
+    return { ok: true, status: res.status, data: await readGraphJson<T>(res) }
+}
+
+async function readGraphJson<T>(res: Response): Promise<T> {
+    const text = await res.text()
+    if (!text) return {} as T
+    return JSON.parse(text) as T
+}
+
+export async function graphDelete<T = Record<string, unknown>>(
+    path: string,
+    accessToken: string,
+): Promise<GraphResult<T>> {
+    const res = await callWithRetry(`${GRAPH_BASE}${path}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (!res.ok) return { ok: false, status: res.status, error: await parseGraphError(res) }
+    return { ok: true, status: res.status, data: await readGraphJson<T>(res) }
+}
+
 export async function threadsGet<T = Record<string, unknown>>(
     path: string,
     params: Record<string, string>,

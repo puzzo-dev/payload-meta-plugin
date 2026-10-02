@@ -2,6 +2,10 @@ import type { Endpoint } from 'payload'
 import { encryptCredential, decryptCredential, signOAuthState, verifyOAuthState, getMetaAppCredentials, getMaskedMetaAppId } from '../utils/metaCrypto'
 import { graphGet, graphPost, GRAPH_API_VERSION } from '../utils/metaGraphClient'
 import { callerOwnsConfigSite, getUserWithRole, asCollectionSlug } from '../types'
+import { clearedMetaUserConnection } from '../oauth/clearedConnection'
+import { oauthPopupResponse } from '../oauth/popupResult'
+import { tokenForCatalog } from '../sync/catalogSync'
+import { listBusinesses } from '../utils/metaBusinesses'
 
 /**
  * Meta Business Login connect flow — same idea as the official "Meta for
@@ -10,7 +14,7 @@ import { callerOwnsConfigSite, getUserWithRole, asCollectionSlug } from '../type
  *
  * Scopes requested: business_management, pages_show_list, pages_read_engagement,
  * pages_manage_metadata, instagram_basic, ads_management, catalog_management,
- * whatsapp_business_management. Trim this list if a deployment's Meta App
+ * whatsapp_business_management, whatsapp_business_messaging. Trim this list if a deployment's Meta App
  * review doesn't cover all of them — Meta will simply omit ungranted
  * permissions from the resulting token rather than failing the whole flow.
  *
@@ -32,11 +36,22 @@ const OAUTH_SCOPES = [
     'ads_management',
     'catalog_management',
     'whatsapp_business_management',
+    'whatsapp_business_messaging',
 ].join(',')
 
 function isAdminOrAbove(req: { user?: unknown }): boolean {
     const role = getUserWithRole(req.user)?.role
-    return role === 'super-admin' || role === 'admin'
+    return role === 'super-admin' || role === 'admin' || role === 'editor'
+}
+
+function oauthFinished(args: { ok: boolean; error?: string; configId?: string }): Response {
+    const adminBase = `${serverUrl()}/admin/collections/meta-config`
+    const nextPath = args.configId ? `${adminBase}/${args.configId}` : adminBase
+    const params = new URLSearchParams()
+    if (args.ok) params.set('meta_oauth_success', '1')
+    if (args.error) params.set('meta_oauth_error', args.error)
+    const nextUrl = params.size ? `${nextPath}?${params}` : nextPath
+    return oauthPopupResponse({ ok: args.ok, error: args.error ?? null, nextUrl })
 }
 
 function serverUrl(): string {
@@ -105,6 +120,7 @@ export const metaOAuthStartEndpoint: Endpoint = {
             scope: OAUTH_SCOPES,
             response_type: 'code',
         })
+        if (req.query?.popup === '1') params.set('display', 'popup')
 
         return Response.redirect(`https://www.facebook.com/${GRAPH_API_VERSION}/dialog/oauth?${params}`, 302)
     },
@@ -119,29 +135,27 @@ export const metaOAuthCallbackEndpoint: Endpoint = {
         const state = req.query?.state as string | undefined
         const oauthError = req.query?.error_description as string | undefined
 
-        const adminBase = `${serverUrl()}/admin/collections/meta-config`
-
         if (oauthError) {
-            return Response.redirect(`${adminBase}?meta_oauth_error=${encodeURIComponent(oauthError)}`, 302)
+            return oauthFinished({ ok: false, error: oauthError })
         }
         if (!code || !state) {
-            return Response.redirect(`${adminBase}?meta_oauth_error=${encodeURIComponent('Missing code or state')}`, 302)
+            return oauthFinished({ ok: false, error: 'Missing code or state' })
         }
 
         const configId = verifyOAuthState(state)
         if (!configId) {
-            return Response.redirect(`${adminBase}?meta_oauth_error=${encodeURIComponent('Invalid or expired connect request — try again')}`, 302)
+            return oauthFinished({ ok: false, error: 'Invalid or expired connect request — try again' })
         }
 
         try {
             await loadConfig(req.payload, configId)
         } catch {
-            return Response.redirect(`${adminBase}?meta_oauth_error=${encodeURIComponent('Config not found')}`, 302)
+            return oauthFinished({ ok: false, error: 'Config not found' })
         }
 
         const appCreds = getMetaAppCredentials()
         if (!appCreds) {
-            return Response.redirect(`${adminBase}/${configId}?meta_oauth_error=${encodeURIComponent('Meta App not configured on this deployment — set META_APP_ID and META_APP_SECRET.')}`, 302)
+            return oauthFinished({ ok: false, configId, error: 'Meta App not configured on this deployment — set META_APP_ID and META_APP_SECRET.' })
         }
 
         // Step 1: code -> short-lived user access token
@@ -152,7 +166,7 @@ export const metaOAuthCallbackEndpoint: Endpoint = {
             code,
         })
         if (!shortLived.ok || !shortLived.data?.access_token) {
-            return Response.redirect(`${adminBase}/${configId}?meta_oauth_error=${encodeURIComponent(shortLived.error || 'Token exchange failed')}`, 302)
+            return oauthFinished({ ok: false, configId, error: shortLived.error || 'Token exchange failed' })
         }
 
         // Step 2: short-lived -> long-lived user access token (~60 days, refreshed on next connect)
@@ -163,7 +177,7 @@ export const metaOAuthCallbackEndpoint: Endpoint = {
             fb_exchange_token: shortLived.data.access_token,
         })
         if (!longLived.ok || !longLived.data?.access_token) {
-            return Response.redirect(`${adminBase}/${configId}?meta_oauth_error=${encodeURIComponent(longLived.error || 'Long-lived token exchange failed')}`, 302)
+            return oauthFinished({ ok: false, configId, error: longLived.error || 'Long-lived token exchange failed' })
         }
 
         // connectionStatus intentionally NOT set to 'connected' here — that
@@ -185,7 +199,37 @@ export const metaOAuthCallbackEndpoint: Endpoint = {
             context: { skipConnectionTest: true },
         })
 
-        return Response.redirect(`${adminBase}/${configId}?meta_oauth_success=1`, 302)
+        return oauthFinished({ ok: true, configId })
+    },
+}
+
+// ── POST /meta-oauth/disconnect { configId } ────────────────────────────────
+export const metaOAuthDisconnectEndpoint: Endpoint = {
+    path: '/meta-oauth/disconnect',
+    method: 'post',
+    handler: async (req) => {
+        if (!isAdminOrAbove(req)) return Response.json({ error: 'Forbidden' }, { status: 403 })
+        const body = (await req.json?.()) as { configId?: string } | undefined
+        const configId = body?.configId
+        if (!configId) return Response.json({ error: 'Missing configId' }, { status: 400 })
+
+        let config: Record<string, unknown>
+        try {
+            config = await loadConfig(req.payload, configId)
+        } catch {
+            return Response.json({ error: 'Config not found' }, { status: 404 })
+        }
+        if (!callerOwnsConfigSite(req, config)) return Response.json({ error: 'Forbidden' }, { status: 403 })
+
+        const cleared = clearedMetaUserConnection()
+        await req.payload.update({
+            collection: asCollectionSlug('meta-config'),
+            id: configId,
+            data: cleared,
+            overrideAccess: true,
+            context: { skipConnectionTest: true },
+        })
+        return Response.json({ ok: true, ...cleared })
     },
 }
 
@@ -310,22 +354,58 @@ export const metaOAuthListPixelsEndpoint: Endpoint = {
         if (!callerOwnsConfigSite(req, config)) {
             return Response.json({ error: 'Forbidden' }, { status: 403 })
         }
-        const businessManagerId = config.businessManagerId as string | undefined
-        if (!businessManagerId) {
-            return Response.json({ error: 'Set a Business Manager ID on the Connection tab first' }, { status: 400 })
-        }
-        const rawToken = (config.accessToken as string) || (config.oauthUserAccessToken as string)
-        if (!rawToken) return Response.json({ error: 'Not connected' }, { status: 400 })
-        const token = rawToken.startsWith('enc:') ? decryptCredential(rawToken) : rawToken
+        const token = tokenForCatalog(config)
+        if (!token) return Response.json({ error: 'Not connected' }, { status: 400 })
+        const businesses = await listBusinesses(token, config.businessManagerId)
+        if (!businesses.ok) return Response.json({ error: businesses.error }, { status: 502 })
 
-        const result = await graphGet<{ data?: Array<{ id: string; name: string }> }>(`/${businessManagerId}/owned_pixels`, {
+        const pixels: Array<{ id: string; name: string; businessId: string }> = []
+        for (const business of businesses.businesses) {
+            const result = await graphGet<{ data?: Array<{ id: string; name?: string }> }>(`/${business.id}/owned_pixels`, {
+                fields: 'id,name',
+                access_token: token,
+                limit: '100',
+            })
+            if (!result.ok) continue
+            for (const pixel of result.data?.data ?? []) {
+                pixels.push({ id: pixel.id, name: pixel.name || pixel.id, businessId: business.id })
+            }
+        }
+        return Response.json({ pixels, businesses: businesses.businesses })
+    },
+}
+
+// ── POST /meta-oauth/select-pixel { configId, pixelId } ─────────────────────
+export const metaOAuthSelectPixelEndpoint: Endpoint = {
+    path: '/meta-oauth/select-pixel',
+    method: 'post',
+    handler: async (req) => {
+        if (!isAdminOrAbove(req)) return Response.json({ error: 'Forbidden' }, { status: 403 })
+        const body = (await req.json?.()) as { configId?: string; pixelId?: string } | undefined
+        if (!body?.configId || !body.pixelId) {
+            return Response.json({ error: 'Missing configId or pixelId' }, { status: 400 })
+        }
+        const config = await loadConfig(req.payload, body.configId)
+        if (!callerOwnsConfigSite(req, config)) return Response.json({ error: 'Forbidden' }, { status: 403 })
+        const token = tokenForCatalog(config)
+        if (!token) return Response.json({ error: 'Not connected' }, { status: 400 })
+
+        const pixel = await graphGet<{ id?: string; name?: string }>(`/${body.pixelId}`, {
             fields: 'id,name',
             access_token: token,
-            limit: '100',
         })
-        if (!result.ok) return Response.json({ error: result.error }, { status: 502 })
+        if (!pixel.ok || !pixel.data?.id) {
+            return Response.json({ error: pixel.error || 'That Pixel is not on this Facebook login.' }, { status: 404 })
+        }
 
-        return Response.json({ pixels: result.data?.data ?? [] })
+        await req.payload.update({
+            collection: asCollectionSlug('meta-config'),
+            id: body.configId,
+            data: { pixelId: pixel.data.id, pixelEnabled: true },
+            overrideAccess: true,
+            context: { skipConnectionTest: true },
+        })
+        return Response.json({ ok: true, pixelId: pixel.data.id, name: pixel.data.name || pixel.data.id })
     },
 }
 
@@ -336,24 +416,23 @@ export const metaOAuthCreatePixelEndpoint: Endpoint = {
     handler: async (req) => {
         if (!isAdminOrAbove(req)) return Response.json({ error: 'Forbidden' }, { status: 403 })
 
-        const body = (await req.json?.()) as { configId?: string; name?: string } | undefined
+        const body = (await req.json?.()) as { configId?: string; name?: string; businessId?: string } | undefined
         const configId = body?.configId
-        const name = body?.name
+        const name = body?.name?.trim()
         if (!configId || !name) return Response.json({ error: 'Missing configId or name' }, { status: 400 })
 
         const config = await loadConfig(req.payload, configId)
         if (!callerOwnsConfigSite(req, config)) {
             return Response.json({ error: 'Forbidden' }, { status: 403 })
         }
-        const businessManagerId = config.businessManagerId as string | undefined
-        if (!businessManagerId) {
-            return Response.json({ error: 'Set a Business Manager ID on the Connection tab first' }, { status: 400 })
-        }
-        const rawToken = (config.accessToken as string) || (config.oauthUserAccessToken as string)
-        if (!rawToken) return Response.json({ error: 'Not connected' }, { status: 400 })
-        const token = rawToken.startsWith('enc:') ? decryptCredential(rawToken) : rawToken
+        const token = tokenForCatalog(config)
+        if (!token) return Response.json({ error: 'Not connected' }, { status: 400 })
+        const businesses = await listBusinesses(token, body.businessId || config.businessManagerId)
+        if (!businesses.ok) return Response.json({ error: businesses.error }, { status: 502 })
+        const business = businesses.businesses.find((item) => item.id === body.businessId) || businesses.businesses[0]
+        if (!business) return Response.json({ error: 'This Facebook login has no Business Manager to own a Pixel.' }, { status: 400 })
 
-        const result = await graphPost<{ id?: string }>(`/${businessManagerId}/adspixels`, {
+        const result = await graphPost<{ id?: string }>(`/${business.id}/adspixels`, {
             name,
             access_token: token,
         })
@@ -364,11 +443,11 @@ export const metaOAuthCreatePixelEndpoint: Endpoint = {
         await req.payload.update({
             collection: asCollectionSlug('meta-config'),
             id: configId,
-            data: { pixelId: result.data.id, pixelEnabled: true },
+            data: { pixelId: result.data.id, pixelEnabled: true, businessManagerId: business.id },
             overrideAccess: true,
             context: { skipConnectionTest: true },
         })
 
-        return Response.json({ ok: true, pixelId: result.data.id })
+        return Response.json({ ok: true, pixelId: result.data.id, businessId: business.id })
     },
 }

@@ -1,6 +1,6 @@
 {
   "name": "payload-meta-plugin",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Payload CMS plugin for connecting multi-tenant sites to Meta's network (Facebook Pixel + Conversions API, Facebook/Instagram Commerce Catalog, WhatsApp Business Cloud API). Modular per-channel, per-site — nothing hardcoded to one product line.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -45,15 +45,26 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/components/ThreadsConnectPanel/index.js"
       }
+    },
+    "./components/MetaCatalogSync": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/components/MetaCatalogSync/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/components/MetaCatalogSync/index.js"
+      }
     }
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/components/MetaConnectPanel/index.tsx src/components/MetaPixelSelect/index.tsx src/components/ThreadsConnectPanel/index.tsx --format cjs,esm --dts --clean --out-dir dist",
-    "dev": "tsup src/index.ts src/components/MetaConnectPanel/index.tsx src/components/MetaPixelSelect/index.tsx src/components/ThreadsConnectPanel/index.tsx --format cjs,esm --dts --watch --out-dir dist",
+    "build": "tsup src/index.ts src/components/MetaConnectPanel/index.tsx src/components/MetaPixelSelect/index.tsx src/components/ThreadsConnectPanel/index.tsx src/components/MetaCatalogSync/index.tsx --format cjs,esm --dts --clean --out-dir dist",
+    "dev": "tsup src/index.ts src/components/MetaConnectPanel/index.tsx src/components/MetaPixelSelect/index.tsx src/components/ThreadsConnectPanel/index.tsx src/components/MetaCatalogSync/index.tsx --format cjs,esm --dts --watch --out-dir dist",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test 'src/**/*.test.ts'",
     "lint": "eslint src",

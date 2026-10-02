@@ -17,7 +17,7 @@ It provides:
 > This plugin does **not** duplicate WhatsApp webhook receiving or outbound sending — the host CMS already has a generic `webhooks` collection (`payload-cms/src/collections/Webhooks.ts`) + `webhookReceiver.ts` for inbound, and `lib/whatsapp.ts`'s `sendWhatsApp()` (Meta Cloud API provider) for outbound. See [Why Not Rebuild WhatsApp?](#why-not-rebuild-whatsapp) below.
 
 > [!WARNING]
-> **Held out of production** (`payload-cms/src/payload.config.ts` only registers `metaPlugin()` when `NODE_ENV !== 'production'`) until the Meta App clears App Review and switches to Live mode. In Development mode, Meta only allows OAuth for users added as Testers/Admins/Developers on the App itself — real customers can't connect regardless of what's deployed, so there's no benefit to shipping it early, and doing so would surface a Connect button that fails for anyone not on that list. Fully active in dev for continued testing against the real App (App ID/Secret + use cases already configured, see below). Once App Review completes, remove the `NODE_ENV` condition around `metaPlugin(...)` in `payload.config.ts` to go live.
+> In Development mode, Meta only allows OAuth for users added as Testers, Admins, or Developers on the App. Real customers cannot connect until the App is Live and App Review has granted the scopes you use. Set `META_ENCRYPTION_KEY` before connecting a live account; without it the plugin refuses to boot in production unless `ALLOW_PLAINTEXT_META_CREDS=true`, which stores tokens in plain text.
 >
 > Check Meta's current Graph API version (`GRAPH_API_VERSION` in `utils/metaGraphClient.ts`, currently `v21.0`) if any call returns a deprecation error — Meta bumps this periodically.
 
@@ -59,7 +59,7 @@ npm install payload-meta-plugin
 pnpm add payload-meta-plugin
 ```
 
-> Inside this monorepo it's referenced as `workspace:*` — that works fine in CI/production as long as the build pipeline has an explicit build step for it before anything that imports it gets typechecked (its `dist/` is gitignored, not committed). Forgetting that step is a real failure mode: it happened once (Jenkinsfile only built `payload-erpnext-plugin`, not this package, causing a "Cannot find module" typecheck failure), fixed by adding the matching `pnpm build`/`tsc --noEmit` steps for this package alongside the erpnext plugin's in the Jenkinsfile's Validate stage.
+Same release shape as `payload-erpnext-plugin`: install the published package by semver. `prepublishOnly` builds `dist/` (gitignored) before `npm publish` uploads the tarball. Version history is in `CHANGELOG.md`.
 
 ---
 

@@ -162,6 +162,42 @@ export const DetailList: React.FC<{ items: Array<{ label: string; value: React.R
     </div>
 )
 
+export const META_OAUTH_MESSAGE_SOURCE = 'payload-meta-oauth'
+
+/**
+ * Opens Meta's login in a popup. The callback page posts the result back here
+ * and closes. If the browser blocks the popup, the same tab continues the login.
+ */
+export function openMetaOAuthPopup(
+    url: string,
+    onResult: (result: { ok: boolean; error: string | null }) => void,
+): void {
+    const popup = window.open(url, 'payload-meta-oauth', 'popup=yes,width=520,height=720')
+    if (!popup) {
+        window.location.assign(url.replace(/([?&])popup=1\b/, '$1popup=0'))
+        return
+    }
+
+    let settled = false
+    const finish = (result: { ok: boolean; error: string | null }) => {
+        if (settled) return
+        settled = true
+        window.removeEventListener('message', onMessage)
+        window.clearInterval(timer)
+        onResult(result)
+    }
+    const onMessage = (event: MessageEvent) => {
+        if (event.origin !== window.location.origin) return
+        const data = event.data as { source?: string; ok?: boolean; error?: string | null } | null
+        if (!data || data.source !== META_OAUTH_MESSAGE_SOURCE) return
+        finish({ ok: Boolean(data.ok), error: data.error ? String(data.error) : null })
+    }
+    window.addEventListener('message', onMessage)
+    const timer = window.setInterval(() => {
+        if (popup.closed) finish({ ok: false, error: null })
+    }, 400)
+}
+
 /** Reads and clears a query param left by an OAuth redirect callback, without a full reload. */
 export function useOAuthRedirectMessage(successParam: string, errorParam: string): { success: boolean; error: string | null } {
     const [state, setState] = React.useState<{ success: boolean; error: string | null }>({ success: false, error: null })

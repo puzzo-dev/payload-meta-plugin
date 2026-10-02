@@ -20,7 +20,7 @@ const THREADS_SCOPES = 'threads_basic,threads_content_publish'
 
 function isAdminOrAbove(req: { user?: unknown }): boolean {
     const role = getUserWithRole(req.user)?.role
-    return role === 'super-admin' || role === 'admin'
+    return role === 'super-admin' || role === 'admin' || role === 'editor'
 }
 
 function serverUrl(): string {

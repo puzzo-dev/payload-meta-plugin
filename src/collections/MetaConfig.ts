@@ -3,8 +3,9 @@ import {
     siteScopedCreate, siteScopedDelete, siteScopedRead, siteScopedUpdate
 } from '../access/roles';
 import { organizationField } from '../fields/organizationField';
+import { defaultOrganizationId, defaultSiteId, pinnedOrganizationValue, pinnedSiteValue } from '../fields/tenantDefaults';
 import { encryptCredential, decryptCredential } from '../utils/metaCrypto';
-import { getUserWithRole, asCollectionSlug } from '../types';
+import { getUserOrgId, getUserSiteId, getUserWithRole, asCollectionSlug } from '../types';
 
 /**
  * Field-level guard: only admins/super-admins (or trusted server calls using
@@ -124,23 +125,13 @@ const testMetaConnection: CollectionAfterChangeHook = async ({ doc, previousDoc,
  * Modular: a site enables only the channels it needs via the checkboxes on
  * each tab — nothing here assumes every site wants Pixel + Catalog + WhatsApp.
  *
- * UX Flow — two ways to connect, both fully supported side by side:
- *   A. Manual: paste a long-lived Access Token directly → Save. afterChange
- *      hook verifies the token against Graph API and sets connectionStatus.
- *   B. OAuth ("Connect to Meta Business", like the official Meta for WordPress
- *      plugin): click Connect, log in, pick a Facebook Page you manage — its
- *      linked Instagram Business account is auto-detected — then select or
- *      create a Pixel. Connect Threads separately (its own OAuth flow — see
- *      the Threads tab). Both use the ONE platform-level Meta App configured
- *      via META_APP_ID/META_APP_SECRET (see utils/metaCrypto.ts) — no site
- *      owner ever creates a Meta App or handles an App Secret; that's a
- *      one-time step done once for the whole deployment, same pattern as
- *      Buffer/Hootsuite/Zapier. OAuth just populates the same
- *      `accessToken`/`pixelId` fields manual entry uses, so nothing
- *      downstream (Conversions API, Catalog feed) needs to know which path
- *      populated them.
- *   Either way: enable whichever channel tabs this site needs (Pixel / Catalog
- *   / WhatsApp / Threads) — nothing here assumes a site wants all of them.
+ * UX Flow — one platform Meta App, then each site owner logs in:
+ *   META_APP_ID and META_APP_SECRET are set once for the deployment. A site
+ *   owner clicks Log in with Facebook, which opens Meta's login popup. The
+ *   login writes the Page, Instagram account, catalog, Pixel, and WhatsApp
+ *   number onto this document. Those fields stay read-only. Disconnect is
+ *   the only way to change them, and it deletes the saved tokens and ids so
+ *   the owner can log in again. Threads stays its own login on the Threads tab.
  *
  * Deliberately does NOT yet include: WhatsApp webhook verify-token handling
  * (belongs on the host CMS's existing generic Webhooks collection, not
@@ -188,6 +179,43 @@ export const MetaConfig: CollectionConfig = {
             required: true,
             admin: { description: 'Friendly name, e.g. "That Ofada Girl — Meta"' },
         },
+        organizationField({
+            defaultValue: ({ user }) => defaultOrganizationId(user) ?? undefined,
+            admin: {
+                description: 'Choose the organization first. The site list below only includes sites that belong to it.',
+            },
+            hooks: {
+                beforeValidate: [async ({ req, value, siblingData }) => {
+                    const account = getUserWithRole(req.user)
+                    if (account && account.role !== 'super-admin' && getUserOrgId(account) != null && getUserSiteId(account) != null) {
+                        return pinnedOrganizationValue(req.user, value, null)
+                    }
+                    const siteRef = (siblingData as { site?: unknown } | undefined)?.site
+                    const siteId = siteRef && typeof siteRef === 'object'
+                        ? (siteRef as { id?: string | number }).id
+                        : siteRef
+                    if (typeof siteId !== 'string' && typeof siteId !== 'number') {
+                        return pinnedOrganizationValue(req.user, value, null)
+                    }
+                    try {
+                        const site = await req.payload.findByID({
+                            collection: asCollectionSlug('sites'),
+                            id: siteId,
+                            depth: 0,
+                            overrideAccess: true,
+                        }) as { organization?: unknown }
+                        const orgRef = site?.organization
+                        const orgId = orgRef && typeof orgRef === 'object'
+                            ? (orgRef as { id?: string | number }).id
+                            : orgRef
+                        const resolved = typeof orgId === 'string' || typeof orgId === 'number' ? orgId : null
+                        return pinnedOrganizationValue(req.user, value, resolved)
+                    } catch {
+                        return pinnedOrganizationValue(req.user, value, null)
+                    }
+                }],
+            },
+        }),
         {
             type: 'row',
             fields: [
@@ -196,8 +224,20 @@ export const MetaConfig: CollectionConfig = {
                     type: 'relationship',
                     relationTo: 'sites',
                     required: true,
+                    defaultValue: ({ user }) => defaultSiteId(user) ?? undefined,
+                    filterOptions: ({ data }) => {
+                        const orgRef = (data as { organization?: unknown } | undefined)?.organization
+                        const orgId = orgRef && typeof orgRef === 'object'
+                            ? (orgRef as { id?: string | number }).id
+                            : orgRef
+                        if (typeof orgId !== 'string' && typeof orgId !== 'number') return false
+                        return { organization: { equals: orgId } }
+                    },
+                    hooks: {
+                        beforeValidate: [({ req, value }) => pinnedSiteValue(req.user, value)],
+                    },
                     admin: {
-                        description: 'The site this Meta config belongs to (one per site)',
+                        description: 'A site in the organization above. Filled from your account when you have one site.',
                         width: '70%',
                     },
                 },
@@ -209,7 +249,18 @@ export const MetaConfig: CollectionConfig = {
                 },
             ],
         },
-        organizationField(),
+        {
+            name: 'metaTenantDefaults',
+            type: 'ui',
+            admin: {
+                components: {
+                    Field: {
+                        path: 'payload-meta-plugin/components/MetaConnectPanel',
+                        exportName: 'MetaTenantDefaults',
+                    },
+                },
+            },
+        },
 
         {
             type: 'tabs',
@@ -217,7 +268,7 @@ export const MetaConfig: CollectionConfig = {
                 // ── Tab 1: Connection ────────────────────────────────
                 {
                     label: '🔑 Connection',
-                    description: 'This deployment connects to Meta through one shared Meta App (set once via META_APP_ID/META_APP_SECRET) — click Connect below and log in, no App ID/Secret to enter here.',
+                    description: 'META_APP_ID and META_APP_SECRET are set for the whole deployment. Log in with Facebook below. The fields fill in from that login and stay read-only. Disconnect clears them.',
                     fields: [
                         {
                             name: 'accessToken',
@@ -235,7 +286,10 @@ export const MetaConfig: CollectionConfig = {
                             // nor a completed OAuth connection exist, so nothing needs to be
                             // enforced here at save time.
                             access: { create: adminOrAboveField, update: adminOrAboveField },
-                            admin: { description: 'Long-lived System User or Page access token — only needed for manual authentication, see Connect to Meta Business below.' },
+                            admin: {
+                                description: 'Filled by Facebook login. Shown masked. Disconnect clears it.',
+                                readOnly: true,
+                            },
                             hooks: {
                                 beforeChange: [
                                     async ({ value, originalDoc, req }) =>
@@ -250,7 +304,10 @@ export const MetaConfig: CollectionConfig = {
                         {
                             name: 'businessManagerId',
                             type: 'text',
-                            admin: { description: 'Meta Business Manager ID (needed to list/create Pixels via Connect, and for some other Graph API calls)' },
+                            admin: {
+                                description: 'Filled by Facebook login.',
+                                readOnly: true,
+                            },
                         },
                         {
                             name: 'connectionStatus',
@@ -359,13 +416,17 @@ export const MetaConfig: CollectionConfig = {
                             name: 'pixelEnabled',
                             type: 'checkbox',
                             defaultValue: false,
-                            admin: { description: 'Enable Pixel + Conversions API for this site' },
+                            admin: {
+                                description: 'Turned on when Facebook login saves a Pixel. Disconnect turns it off.',
+                                readOnly: true,
+                            },
                         },
                         {
                             name: 'pixelId',
                             type: 'text',
                             admin: {
-                                description: 'Meta Pixel ID — paste one directly, or use "Select / Create Pixel" below (requires Business Manager ID + Connect on the Connection tab).',
+                                description: 'Filled by Facebook login.',
+                                readOnly: true,
                                 condition: (_data, siblingData) => Boolean(siblingData?.pixelEnabled),
                             },
                         },
@@ -373,7 +434,7 @@ export const MetaConfig: CollectionConfig = {
                             name: 'metaPixelSelectPanel',
                             type: 'ui',
                             admin: {
-                                condition: (_data, siblingData) => Boolean(siblingData?.pixelEnabled),
+                                condition: (data) => Boolean(data?.pixelEnabled) && data?.authMethod !== 'oauth',
                                 components: {
                                     Field: {
                                         path: 'payload-meta-plugin/components/MetaPixelSelect',
@@ -388,27 +449,32 @@ export const MetaConfig: CollectionConfig = {
                 // ── Tab 3: Commerce Catalog ──────────────────────────
                 {
                     label: '🛍️ Commerce Catalog',
-                    description: 'Expose this site\'s product/menu collection as a Meta-compatible Commerce Catalog feed for Facebook/Instagram Shop.',
+                    description: 'Sends this site\'s commerce catalogue to the Facebook catalog owned by the Facebook account that connected the site. Saving a catalogue item updates Meta. The public CSV feed stays available for Commerce Manager to fetch as well.',
                     fields: [
                         {
                             name: 'catalogEnabled',
                             type: 'checkbox',
                             defaultValue: false,
-                            admin: { description: 'Enable Commerce Catalog for this site' },
+                            admin: {
+                                description: 'Turned on when Facebook login saves a catalog. Disconnect turns it off.',
+                                readOnly: true,
+                            },
                         },
                         {
                             name: 'catalogId',
                             type: 'text',
                             admin: {
-                                description: 'Meta Commerce Catalog ID',
+                                description: 'Filled by Facebook login.',
+                                readOnly: true,
                                 condition: (_data, siblingData) => Boolean(siblingData?.catalogEnabled),
                             },
                         },
                         {
                             name: 'catalogSourceCollection',
                             type: 'text',
+                            defaultValue: 'catalogue-items',
                             admin: {
-                                description: 'Payload collection slug to feed into the catalog (e.g. "catalogue-items", "products") — not hardcoded to any one site\'s schema.',
+                                description: 'Leave this as catalogue-items for the commerce plugin. That is the collection whose products sync to Meta.',
                                 condition: (_data, siblingData) => Boolean(siblingData?.catalogEnabled),
                             },
                         },
@@ -416,8 +482,20 @@ export const MetaConfig: CollectionConfig = {
                             name: 'catalogItemUrlTemplate',
                             type: 'text',
                             admin: {
-                                description: 'Item page URL template on the live site — "{slug}" is replaced per item, e.g. https://thatofadagirl.com/menu/{slug}. Required for a valid feed (Meta rejects items without a working link).',
+                                description: 'Item page URL template on the live site — "{slug}" is replaced per item, e.g. https://thatofadagirl.com/menu/{slug}. Required before products can sync (Meta rejects an item with no link).',
                                 condition: (_data, siblingData) => Boolean(siblingData?.catalogEnabled),
+                            },
+                        },
+                        {
+                            name: 'metaCatalogSyncPanel',
+                            type: 'ui',
+                            admin: {
+                                components: {
+                                    Field: {
+                                        path: 'payload-meta-plugin/components/MetaCatalogSync',
+                                        exportName: 'MetaCatalogSyncField',
+                                    },
+                                },
                             },
                         },
                     ],
@@ -426,19 +504,23 @@ export const MetaConfig: CollectionConfig = {
                 // ── Tab 4: WhatsApp Business ─────────────────────────
                 {
                     label: '💬 WhatsApp Business',
-                    description: 'WhatsApp Business Cloud API. Outbound sending already works via the CMS\'s notification system (lib/whatsapp.ts) once this site\'s number is entered here.',
+                    description: 'Official WhatsApp for this site. Choose the number in the connect flow after Facebook login. Alert messages are prepared for you, and Meta reviews them — you can leave the page while that happens. Leave this off to keep the OpenWA bridge.',
                     fields: [
                         {
                             name: 'whatsappEnabled',
                             type: 'checkbox',
                             defaultValue: false,
-                            admin: { description: 'Enable WhatsApp Business Cloud API for this site' },
+                            admin: {
+                                description: 'Turned on when Facebook login saves a WhatsApp number. Disconnect turns it off and the OpenWA bridge is used again.',
+                                readOnly: true,
+                            },
                         },
                         {
                             name: 'whatsappPhoneNumberId',
                             type: 'text',
                             admin: {
-                                description: 'WhatsApp Business phone number ID',
+                                description: 'Filled by Facebook login.',
+                                readOnly: true,
                                 condition: (_data, siblingData) => Boolean(siblingData?.whatsappEnabled),
                             },
                         },
@@ -446,8 +528,18 @@ export const MetaConfig: CollectionConfig = {
                             name: 'whatsappBusinessAccountId',
                             type: 'text',
                             admin: {
-                                description: 'WhatsApp Business Account ID',
+                                description: 'Filled by Facebook login.',
+                                readOnly: true,
                                 condition: (_data, siblingData) => Boolean(siblingData?.whatsappEnabled),
+                            },
+                        },
+                        {
+                            name: 'whatsappAlertsAnnouncedAt',
+                            type: 'date',
+                            admin: {
+                                hidden: true,
+                                readOnly: true,
+                                description: 'When the owner was told that WhatsApp alerts are ready. Cleared if the number changes.',
                             },
                         },
                     ],

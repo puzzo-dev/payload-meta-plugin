@@ -1,12 +1,13 @@
 'use client'
 
 import React, { useState } from 'react'
-import { useDocumentInfo, TextInput } from '@payloadcms/ui'
+import { useDocumentInfo, useForm, TextInput } from '@payloadcms/ui'
 import { FieldWrapper, LoadingState, EmptyState, ErrorState, ConnectButton, StyledSelect } from '../shared'
 
 interface PixelOption {
     id: string
     name: string
+    businessId?: string
 }
 
 /**
@@ -17,6 +18,7 @@ interface PixelOption {
  */
 export const MetaPixelSelectField: React.FC = () => {
     const { id } = useDocumentInfo()
+    const { dispatchFields } = useForm()
     const [pixels, setPixels] = useState<PixelOption[] | null>(null)
     const [loading, setLoading] = useState(false)
     const [selectedPixelId, setSelectedPixelId] = useState('')
@@ -48,9 +50,24 @@ export const MetaPixelSelectField: React.FC = () => {
     }
 
     const applySelectedPixel = () => {
-        if (!selectedPixelId) return
+        if (!id || !selectedPixelId) return
         const chosen = pixels?.find((p) => p.id === selectedPixelId)
-        setSavedMessage(`Reload the page to see "${chosen?.name}" (${selectedPixelId}) in the Pixel ID field above — this picker doesn't write directly to form state; copy the ID or use Create below to save it automatically.`)
+        setError(null)
+        setSavedMessage(null)
+        fetch('/api/meta-oauth/select-pixel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ configId: id, pixelId: selectedPixelId }),
+        })
+            .then((res) => res.json())
+            .then((data) => {
+                if (data.error) { setError(data.error); return }
+                dispatchFields({ type: 'UPDATE', path: 'pixelEnabled', value: true })
+                dispatchFields({ type: 'UPDATE', path: 'pixelId', value: data.pixelId })
+                if (chosen?.businessId) dispatchFields({ type: 'UPDATE', path: 'businessManagerId', value: chosen.businessId })
+                setSavedMessage(`Saved Pixel "${chosen?.name || data.name}" (${data.pixelId}) for this site.`)
+            })
+            .catch(() => setError('Failed to save the Pixel'))
     }
 
     const createPixel = () => {
@@ -66,7 +83,10 @@ export const MetaPixelSelectField: React.FC = () => {
             .then((res) => res.json())
             .then((data) => {
                 if (data.error) { setError(data.error); return }
-                setSavedMessage(`Created and saved Pixel "${newPixelName}" (${data.pixelId}). Reload this page to see it reflected in the Pixel ID field above.`)
+                dispatchFields({ type: 'UPDATE', path: 'pixelEnabled', value: true })
+                dispatchFields({ type: 'UPDATE', path: 'pixelId', value: data.pixelId })
+                if (data.businessId) dispatchFields({ type: 'UPDATE', path: 'businessManagerId', value: data.businessId })
+                setSavedMessage(`Created and saved Pixel "${newPixelName}" (${data.pixelId}).`)
                 setNewPixelName('')
             })
             .catch(() => setError('Failed to create Pixel'))

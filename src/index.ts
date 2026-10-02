@@ -1,4 +1,4 @@
-import type { Plugin, Field, BlocksField } from 'payload'
+import type { Plugin, Field, BlocksField, CollectionConfig } from 'payload'
 import { MetaConfig } from './collections/MetaConfig'
 import { metaCatalogFeedEndpoint } from './endpoints/metaCatalogFeed'
 import { metaConversionEventHandler } from './actions/metaActions'
@@ -6,12 +6,29 @@ import {
     metaOAuthAppInfoEndpoint,
     metaOAuthStartEndpoint,
     metaOAuthCallbackEndpoint,
+    metaOAuthDisconnectEndpoint,
     metaOAuthPagesEndpoint,
     metaOAuthSelectPageEndpoint,
     metaOAuthListPixelsEndpoint,
+    metaOAuthSelectPixelEndpoint,
     metaOAuthCreatePixelEndpoint,
 } from './endpoints/metaOAuth'
 import { threadsOAuthStartEndpoint, threadsOAuthCallbackEndpoint } from './endpoints/threadsOAuth'
+import {
+    metaOAuthMeEndpoint,
+    metaCatalogListEndpoint,
+    metaCatalogSelectEndpoint,
+    metaCatalogCreateEndpoint,
+    metaCatalogSyncEndpoint,
+} from './endpoints/metaCatalogSync'
+import {
+    metaWhatsAppNumbersEndpoint,
+    metaWhatsAppSelectEndpoint,
+    metaWhatsAppTemplatesEndpoint,
+    metaWhatsAppTemplatesFileEndpoint,
+} from './endpoints/metaWhatsApp'
+import { COMMERCE_COLLECTION } from './sync/catalogProduct'
+import { syncCatalogDoc } from './sync/catalogSync'
 
 /** Minimal interface for the CMS action registry — same shape payload-erpnext-plugin uses. */
 export interface ActionRegistryRef {
@@ -64,7 +81,8 @@ export function metaPlugin(options: MetaPluginOptions = {}): Plugin {
 
     return (config) => {
         const modifiedCollections = (config.collections || []).map((collection) => {
-            if (collection.slug !== 'workflows') return collection
+            const withSync = attachCommerceCatalogSync(collection)
+            if (withSync.slug !== 'workflows') return withSync
 
             const stepsField = collection.fields.find((f: Field): f is BlocksField => 'name' in f && f.name === 'steps' && f.type === 'blocks')
             if (!stepsField) return collection
@@ -140,10 +158,21 @@ export function metaPlugin(options: MetaPluginOptions = {}): Plugin {
                 metaOAuthAppInfoEndpoint,
                 metaOAuthStartEndpoint,
                 metaOAuthCallbackEndpoint,
+                metaOAuthDisconnectEndpoint,
                 metaOAuthPagesEndpoint,
                 metaOAuthSelectPageEndpoint,
                 metaOAuthListPixelsEndpoint,
+                metaOAuthSelectPixelEndpoint,
                 metaOAuthCreatePixelEndpoint,
+                metaOAuthMeEndpoint,
+                metaCatalogListEndpoint,
+                metaCatalogSelectEndpoint,
+                metaCatalogCreateEndpoint,
+                metaCatalogSyncEndpoint,
+                metaWhatsAppNumbersEndpoint,
+                metaWhatsAppSelectEndpoint,
+                metaWhatsAppTemplatesEndpoint,
+                metaWhatsAppTemplatesFileEndpoint,
                 threadsOAuthStartEndpoint,
                 threadsOAuthCallbackEndpoint,
             ],
@@ -151,6 +180,44 @@ export function metaPlugin(options: MetaPluginOptions = {}): Plugin {
     }
 }
 
+function attachCommerceCatalogSync(collection: CollectionConfig): CollectionConfig {
+    if (collection.slug !== COMMERCE_COLLECTION) return collection
+    const slug = collection.slug
+    return {
+        ...collection,
+        hooks: {
+            ...collection.hooks,
+            afterChange: [
+                ...(collection.hooks?.afterChange || []),
+                async ({ doc, req }) => {
+                    if (req.context?.skipMetaCatalogSync) return doc
+                    if ((doc as { _status?: string })._status === 'draft') return doc
+                    try {
+                        await syncCatalogDoc(req.payload, doc as Record<string, unknown>, 'UPDATE', slug)
+                    } catch (err) {
+                        req.payload.logger.warn(`[MetaCatalog] save sync failed: ${err}`)
+                    }
+                    return doc
+                },
+            ],
+            afterDelete: [
+                ...(collection.hooks?.afterDelete || []),
+                async ({ doc, req }) => {
+                    if (!doc) return
+                    try {
+                        await syncCatalogDoc(req.payload, doc as Record<string, unknown>, 'DELETE', slug)
+                    } catch (err) {
+                        req.payload.logger.warn(`[MetaCatalog] delete sync failed: ${err}`)
+                    }
+                },
+            ],
+        },
+    }
+}
+
+export { whatsappTemplateMessage, explainTemplateSendError, WHATSAPP_ALERTS_READY_KEY } from './whatsapp/alertTemplates'
+export { alertStatusForConfig, fileMissingAlertTemplates } from './whatsapp/fileAlertTemplates'
+export type { WhatsAppTemplateMessage, AlertSummary } from './whatsapp/alertTemplates'
 export { encryptCredential, decryptCredential } from './utils/metaCrypto'
 export { getMetaCredentials } from './utils/metaCredentials'
 export { sendConversionEvent } from './sync/conversionsApi'
