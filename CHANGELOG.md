@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2
+
+### Fixed
+
+- The workflow conversion step stays on the collection the plugin registers.
+  The previous release wrote that step onto the original collection and returned
+  a different object.
+
 ## 0.3.1
 
 ### Fixed
