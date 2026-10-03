@@ -140,3 +140,38 @@ describe('siteScopedDelete', () => {
         assert.equal(roles.siteScopedDelete()(req(null)), false)
     })
 })
+
+describe('organization admin (site owner)', () => {
+    const owner = { id: 9, role: 'admin' as const, organization: 3 }
+    const sites = {
+        find: async () => ({ docs: [{ id: 11 }, { id: 12 }] }),
+    }
+
+    function ownerReq(data?: Record<string, unknown>) {
+        const request = { user: owner, headers: new Headers(), payload: sites }
+        return data ? { req: request, data } : { req: request }
+    }
+
+    it('lists every site in the organization', async () => {
+        assert.deepEqual(await roles.siteScopedRead()(ownerReq() as never), { site: { in: [11, 12] } })
+        assert.deepEqual(await roles.siteScopedUpdate()(ownerReq() as never), { site: { in: [11, 12] } })
+        assert.deepEqual(await roles.siteScopedDelete()(ownerReq() as never), { site: { in: [11, 12] } })
+    })
+
+    it('creates a config only for a site in that organization', async () => {
+        assert.equal(await roles.siteScopedCreate()(ownerReq({ site: 12 }) as never), true)
+        assert.equal(await roles.siteScopedCreate()(ownerReq({ site: 99 }) as never), false)
+    })
+
+    it('denies the owner when their sites cannot be resolved', async () => {
+        const request = { user: owner, headers: new Headers() }
+        assert.equal(await roles.siteScopedRead()({ req: request } as never), false)
+        assert.equal(await roles.userMayAccessSite(request, 11), false)
+    })
+
+    it('allows the owner to act on their sites from an endpoint', async () => {
+        const request = { user: owner, headers: new Headers(), payload: sites }
+        assert.equal(await roles.userMayAccessSite(request, 11), true)
+        assert.equal(await roles.userMayAccessSite(request, 99), false)
+    })
+})

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+### Fixed
+
+- An organization admin can configure Meta for every site in their organization.
+  Their account has no single site, and the previous check rejected that account.
+
 ## 0.3.0
 
 ### Added

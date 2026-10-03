@@ -5,7 +5,7 @@ import {
 import { organizationField } from '../fields/organizationField';
 import { defaultOrganizationId, defaultSiteId, pinnedOrganizationValue, pinnedSiteValue } from '../fields/tenantDefaults';
 import { encryptCredential, decryptCredential } from '../utils/metaCrypto';
-import { getUserOrgId, getUserSiteId, getUserWithRole, asCollectionSlug } from '../types';
+import { getUserOrgId, getUserWithRole, asCollectionSlug } from '../types';
 
 /**
  * Field-level guard: only admins/super-admins (or trusted server calls using
@@ -187,7 +187,7 @@ export const MetaConfig: CollectionConfig = {
             hooks: {
                 beforeValidate: [async ({ req, value, siblingData }) => {
                     const account = getUserWithRole(req.user)
-                    if (account && account.role !== 'super-admin' && getUserOrgId(account) != null && getUserSiteId(account) != null) {
+                    if (account && account.role !== 'super-admin' && getUserOrgId(account) != null) {
                         return pinnedOrganizationValue(req.user, value, null)
                     }
                     const siteRef = (siblingData as { site?: unknown } | undefined)?.site
