@@ -84,8 +84,8 @@ export function metaPlugin(options: MetaPluginOptions = {}): Plugin {
             const withSync = attachCommerceCatalogSync(collection)
             if (withSync.slug !== 'workflows') return withSync
 
-            const stepsField = collection.fields.find((f: Field): f is BlocksField => 'name' in f && f.name === 'steps' && f.type === 'blocks')
-            if (!stepsField) return collection
+            const stepsField = withSync.fields.find((f: Field): f is BlocksField => 'name' in f && f.name === 'steps' && f.type === 'blocks')
+            if (!stepsField) return withSync
 
             stepsField.blocks = [
                 ...(stepsField.blocks || []),
@@ -146,7 +146,7 @@ export function metaPlugin(options: MetaPluginOptions = {}): Plugin {
                     ],
                 },
             ]
-            return collection
+            return withSync
         })
 
         return {
